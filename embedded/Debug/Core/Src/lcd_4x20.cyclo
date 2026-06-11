@@ -1,0 +1,7 @@
+../Core/Src/lcd_4x20.c:3:6:LCD4_Init	1
+../Core/Src/lcd_4x20.c:7:6:LCD4_Clear	1
+../Core/Src/lcd_4x20.c:11:6:LCD4_SetCursor	1
+../Core/Src/lcd_4x20.c:15:6:LCD4_PrintString	1
+../Core/Src/lcd_4x20.c:19:6:LCD4_PrintChar	1
+../Core/Src/lcd_4x20.c:23:6:LCD4_Backlight	1
+../Core/Src/lcd_4x20.c:27:6:LCD4_DefineCustomChar	1

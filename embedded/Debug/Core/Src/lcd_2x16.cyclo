@@ -1,0 +1,6 @@
+../Core/Src/lcd_2x16.c:3:6:LCD2_Init	1
+../Core/Src/lcd_2x16.c:7:6:LCD2_Clear	1
+../Core/Src/lcd_2x16.c:11:6:LCD2_SetCursor	1
+../Core/Src/lcd_2x16.c:15:6:LCD2_PrintString	1
+../Core/Src/lcd_2x16.c:19:6:LCD2_Printchar	1
+../Core/Src/lcd_2x16.c:23:6:LCD2_Backlight	1

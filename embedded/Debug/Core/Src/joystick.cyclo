@@ -1,0 +1,2 @@
+../Core/Src/joystick.c:4:6:JOY_Init	1
+../Core/Src/joystick.c:7:10:JOY_Read	1
