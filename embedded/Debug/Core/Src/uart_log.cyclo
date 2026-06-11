@@ -1,7 +1,7 @@
 ../Core/Src/uart_log.c:7:6:ULOG_Init	1
-../Core/Src/uart_log.c:13:13:ulog_send	2
-../Core/Src/uart_log.c:19:6:ULOG_Info	2
-../Core/Src/uart_log.c:26:6:ULOG_InfoInt	2
-../Core/Src/uart_log.c:33:6:ULOG_InfoFloat	3
-../Core/Src/uart_log.c:46:6:ULOG_Error	2
-../Core/Src/uart_log.c:53:6:ULOG_ErrorInt	2
+../Core/Src/uart_log.c:15:13:ulog_send	2
+../Core/Src/uart_log.c:21:6:ULOG_Info	2
+../Core/Src/uart_log.c:28:6:ULOG_InfoInt	2
+../Core/Src/uart_log.c:35:6:ULOG_InfoFloat	3
+../Core/Src/uart_log.c:48:6:ULOG_Error	2
+../Core/Src/uart_log.c:55:6:ULOG_ErrorInt	2

@@ -7,6 +7,8 @@ static UART_HandleTypeDef *s_huart = NULL;
 void ULOG_Init(UART_HandleTypeDef *huart)
 {
     s_huart = huart;
+    const char *clear = "\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n";
+    HAL_UART_Transmit(huart, (uint8_t *)clear, strlen(clear), 100);
 }
 
 /* Internal send — blocks until done */
