@@ -1,8 +1,1 @@
 blank_issues_enabled: false
-contact_links:
-  - name: Project Specification
-    url: https://github.com/owner/repo/blob/main/chess_system_specification.docx
-    about: Full system architecture and design decisions — consult before opening an issue.
-  - name: Progress Checklist
-    url: https://github.com/owner/repo/blob/main/checklist.md
-    about: Current implementation status across all layers.
