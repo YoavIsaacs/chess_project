@@ -1,0 +1,70 @@
+name: Checklist Step
+description: Track implementation of a single step from checklist.md
+title: "[Step N]: "
+labels: ["checklist"]
+assignees: []
+
+body:
+  - type: dropdown
+    id: step
+    attributes:
+      label: Checklist Step
+      options:
+        - "Step 0a — Blinky (on-board LED)"
+        - "Step 0b — Blinky (external LED)"
+        - "Step 0c — Peripheral driver scaffolding"
+        - "Step 0d — I2C address scanner"
+        - "Step 1 — Basic chess clock + 4×20 LCD"
+        - "Step 2 — DHT sensor + 2×16 LCD Mode A"
+        - "Step 3 — Microphone ADC"
+        - "Step 4 — LCD mode toggle (Button 3)"
+        - "Step 5 — Per-player LEDs"
+        - "Step 6 — Joystick + pre-game menu"
+        - "Step 7 — Player name entry"
+        - "Step 8 — Full in-game 4×20 LCD"
+        - "Step 9 — Pause / end game / result"
+        - "Step 10 — UART to Pi"
+        - "Step 11 — Servo blunder reaction"
+        - "Step 12 — UART Handler + Redis"
+        - "Step 13 — MySQL schema"
+        - "Step 14 — FastAPI skeleton"
+        - "Step 15 — YOLO camera integration"
+        - "Step 16 — Stockfish integration"
+        - "Step 17 — End-to-end"
+        - "Step 18 — Game selection page"
+        - "Step 19 — Game stats page"
+        - "Step 20 — Game analysis page"
+        - "Step 21 — CI/CD"
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What exactly needs to be done for this step to be complete? Reference the spec where relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: How will you know this step is done? Describe observable, testable outcomes.
+      placeholder: |
+        - [ ] White time counts down when Button 1 pressed
+        - [ ] Black time counts down when Button 2 pressed
+        - [ ] Times display correctly on 4×20 LCD row 4
+    validations:
+      required: true
+
+  - type: textarea
+    id: blockers
+    attributes:
+      label: Blockers / Dependencies
+      description: Any previous steps or issues that must be resolved first.
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Notes

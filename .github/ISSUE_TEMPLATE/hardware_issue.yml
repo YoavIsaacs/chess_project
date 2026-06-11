@@ -1,0 +1,68 @@
+name: Hardware / Wiring Issue
+description: Report a wiring mistake, pin conflict, or electrical problem
+title: "[HW]: "
+labels: ["hardware", "triage"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for problems that are rooted in **physical hardware** — wrong pin, short circuit, signal integrity, power rail issue, etc.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected Component
+      options:
+        - Push button(s)
+        - Joystick
+        - DHT sensor
+        - 4×20 I2C LCD (0x27)
+        - 2×16 I2C LCD (0x3F)
+        - Per-player LEDs
+        - Microphone (ADC)
+        - SG90 Servo
+        - UART to Raspberry Pi
+        - Power / ground rail
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe the hardware problem. Include the symptom you observe.
+    validations:
+      required: true
+
+  - type: textarea
+    id: pins
+    attributes:
+      label: Pins / Connections Involved
+      description: List the Nucleo morpho pins, GPIO identifiers, and the peripheral pins connected.
+      placeholder: |
+        - CN10 pin 3 → PA_8 → LCD SDA
+        - CN10 pin 5 → PA_9 → LCD SCL
+    validations:
+      required: true
+
+  - type: textarea
+    id: measurements
+    attributes:
+      label: Measurements / Observations
+      description: Voltage readings, logic analyser captures, oscilloscope traces, I2C scanner output, etc.
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Electrical Behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Photos / Schematic
+      description: Attach photos of the breadboard or wiring diagram if possible.

@@ -1,0 +1,78 @@
+name: Feature Request
+description: Propose a new feature or enhancement
+title: "[Feature]: "
+labels: ["enhancement"]
+assignees: []
+
+body:
+  - type: dropdown
+    id: layer
+    attributes:
+      label: System Layer
+      options:
+        - Embedded (STM32F446RE)
+        - Backend (Raspberry Pi / FastAPI)
+        - Frontend (React)
+        - Hardware / Wiring
+        - CI/CD
+        - Cross-layer
+    validations:
+      required: true
+
+  - type: dropdown
+    id: checklist_step
+    attributes:
+      label: Related Checklist Step
+      description: Which step in the project checklist does this relate to?
+      options:
+        - Step 0 — Embedded scaffolding
+        - Step 1 — Basic chess clock
+        - Step 2 — DHT sensor
+        - Step 3 — Microphone ADC
+        - Step 4 — LCD mode toggle
+        - Step 5 — Per-player LEDs
+        - Step 6 — Joystick + pre-game menu
+        - Step 7 — Player name entry
+        - Step 8 — Full in-game LCD display
+        - Step 9 — Pause / end game
+        - Step 10 — UART to Pi
+        - Step 11 — Servo blunder reaction
+        - Step 12 — UART Handler + Redis
+        - Step 13 — MySQL schema
+        - Step 14 — FastAPI skeleton
+        - Step 15 — YOLO camera
+        - Step 16 — Stockfish integration
+        - Step 17 — End-to-end
+        - Step 18 — Game selection page
+        - Step 19 — Game stats page
+        - Step 20 — Game analysis page
+        - Step 21 — CI/CD
+        - Not on checklist / new
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Motivation
+      description: What problem does this solve, or what opportunity does it address?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe the feature and how it should behave.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any other approaches you considered and why you ruled them out.
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional Context
+      description: Mockups, references, spec sections, or hardware constraints.

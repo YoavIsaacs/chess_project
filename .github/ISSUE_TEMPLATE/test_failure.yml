@@ -1,0 +1,64 @@
+name: Test Failure
+description: Report a failing test that needs investigation (fix the implementation, not the test)
+title: "[Test Failure]: "
+labels: ["test-failure", "triage"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > **Reminder:** Tests are the source of truth. The implementation is fixed — not the test — unless both are explicitly re-evaluated together.
+
+  - type: dropdown
+    id: layer
+    attributes:
+      label: System Layer
+      options:
+        - Embedded (STM32F446RE)
+        - Backend (Raspberry Pi / FastAPI)
+        - Frontend (React)
+        - CI/CD pipeline itself
+    validations:
+      required: true
+
+  - type: input
+    id: test_name
+    attributes:
+      label: Test Name / File
+      placeholder: "test_stockfish.py::test_blunder_detection"
+    validations:
+      required: true
+
+  - type: input
+    id: ci_run
+    attributes:
+      label: CI Run URL
+      description: Link to the failing GitHub Actions run (if applicable).
+      placeholder: "https://github.com/owner/repo/actions/runs/..."
+
+  - type: textarea
+    id: failure_output
+    attributes:
+      label: Failure Output
+      description: Paste the full test output or relevant portion.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: first_failing
+    attributes:
+      label: First Failing Commit
+      description: SHA or PR where this started failing.
+
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: Hypothesis
+      description: What do you think caused the implementation to diverge from what the test expects?
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional Context

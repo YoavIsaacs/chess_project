@@ -1,0 +1,90 @@
+name: Bug Report
+description: Report a defect in any layer of the chess analysis system
+title: "[Bug]: "
+labels: ["bug", "triage"]
+assignees: []
+
+body:
+  - type: dropdown
+    id: layer
+    attributes:
+      label: System Layer
+      description: Which part of the system is affected?
+      options:
+        - Embedded (STM32F446RE)
+        - Backend (Raspberry Pi / FastAPI)
+        - Frontend (React)
+        - Hardware / Wiring
+        - CI/CD
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - Critical — system crash / data loss
+        - High — major feature broken
+        - Medium — feature degraded
+        - Low — cosmetic / minor
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Clear and concise description of the bug.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to Reproduce
+      placeholder: |
+        1. Power on the board
+        2. Press Button 1 ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Firmware version / commit SHA, OS, relevant hardware revision, etc.
+      placeholder: |
+        - Commit: abc1234
+        - Board: NUCLEO-F446RE rev C
+        - Cube IDE: 1.15.x
+        - Python: 3.11
+        - Node: 22.x
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Serial Output
+      description: Paste any relevant UART logs, Python tracebacks, or browser console errors.
+      render: shell
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional Context
+      description: Photos, oscilloscope captures, or anything else relevant.
