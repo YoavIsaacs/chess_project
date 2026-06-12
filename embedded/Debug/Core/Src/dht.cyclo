@@ -1,2 +1,2 @@
-../Core/Src/dht.c:4:6:DHT_Init	1
-../Core/Src/dht.c:8:10:DHT_Read	1
+../Core/Src/dht.c:18:6:DHT_Init	1
+../Core/Src/dht.c:24:10:DHT_Read	1
