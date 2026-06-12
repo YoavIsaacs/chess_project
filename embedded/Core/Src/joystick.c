@@ -5,14 +5,16 @@ static ADC_HandleTypeDef *s_hadc;
 static GPIO_TypeDef      *s_clickPort;
 static uint16_t           s_clickPin;
 
-void JOY_Init(ADC_HandleTypeDef *hadc, GPIO_TypeDef *clickPort, uint16_t clickPin) {
+void JOY_Init(ADC_HandleTypeDef *hadc, GPIO_TypeDef *clickPort, uint16_t clickPin)
+{
     s_hadc      = hadc;
     s_clickPort = clickPort;
     s_clickPin  = clickPin;
-    ULOG_Info("JOY", "Init done (polling mode)");
+    ULOG_Info("JOY", "Init", "done (polling mode)");
 }
 
-JOY_Data JOY_Read(void) {
+JOY_Data JOY_Read(void)
+{
     JOY_Data result = {0};
     result.status = JOY_ERROR;
 

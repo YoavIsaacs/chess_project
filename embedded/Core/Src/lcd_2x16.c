@@ -26,34 +26,15 @@
 #include "../Inc/lcd_2x16.h"
 #include "../Inc/uart_log.h"
 
-/* ------------------------------------------------------------------ */
-/* Module state                                                         */
-/* ------------------------------------------------------------------ */
-
 static I2C_HandleTypeDef *s_hi2c     = NULL;
-static uint8_t            s_backlight = 0x08u;  /* P3 always set */
+static uint8_t            s_backlight = 0x08u;
 
-/* ------------------------------------------------------------------ */
-/* Internal helpers                                                     */
-/* ------------------------------------------------------------------ */
-
-/*
- * Write one byte to the PCF8574 over I2C.
- * Returns HAL_OK or HAL_ERROR.
- */
 static HAL_StatusTypeDef lcd2_i2c_write(uint8_t data)
 {
     return HAL_I2C_Master_Transmit(s_hi2c, LCD2_I2C_ADDR, &data, 1,
                                    HAL_MAX_DELAY);
 }
 
-/*
- * Send one 4-bit nibble to the LCD.
- * nibble: the nibble occupies bits [7:4] (high nibble position).
- * rs:     0 = command register, 1 = data register.
- *
- * EN pulse: write with EN high, delay, write with EN low, delay.
- */
 static void lcd2_send_nibble(uint8_t nibble, uint8_t rs)
 {
     uint8_t base = (nibble & 0xF0u) | s_backlight | (rs & 0x01u);
@@ -63,65 +44,47 @@ static void lcd2_send_nibble(uint8_t nibble, uint8_t rs)
     HAL_Delay(1);
 }
 
-/*
- * Send a full byte to the LCD as two nibbles, high nibble first.
- * rs: 0 = command, 1 = data.
- */
 static void lcd2_send_byte(uint8_t data, uint8_t rs)
 {
     lcd2_send_nibble( data & 0xF0u,       rs);
     lcd2_send_nibble((data << 4) & 0xF0u, rs);
 }
 
-/* ------------------------------------------------------------------ */
-/* Public API                                                           */
-/* ------------------------------------------------------------------ */
-
 LCD2_Status LCD2_Init(I2C_HandleTypeDef *hi2c)
 {
     s_hi2c = hi2c;
 
-    HAL_Delay(50);  /* >40 ms power-on delay (HD44780 §4.4) */
+    HAL_Delay(50);
 
-    /*
-     * Initialisation-by-instruction sequence (HD44780 datasheet §4.4).
-     * The display may be in an unknown state at power-on; this sequence
-     * forces it into a known 4-bit mode regardless of starting state.
-     */
     lcd2_send_nibble(0x30u, 0);  HAL_Delay(5);
     lcd2_send_nibble(0x30u, 0);  HAL_Delay(1);
     lcd2_send_nibble(0x30u, 0);  HAL_Delay(1);
-    lcd2_send_nibble(0x20u, 0);  HAL_Delay(1);  /* switch to 4-bit */
+    lcd2_send_nibble(0x20u, 0);  HAL_Delay(1);
 
-    lcd2_send_byte(0x28u, 0);  HAL_Delay(1);    /* 4-bit, 2 lines, 5x8 */
-    lcd2_send_byte(0x08u, 0);  HAL_Delay(1);    /* display off */
-    lcd2_send_byte(0x01u, 0);  HAL_Delay(2);    /* clear */
-    lcd2_send_byte(0x06u, 0);  HAL_Delay(1);    /* entry mode: increment */
-    lcd2_send_byte(0x0Cu, 0);  HAL_Delay(1);    /* display on, cursor off */
+    lcd2_send_byte(0x28u, 0);  HAL_Delay(1);
+    lcd2_send_byte(0x08u, 0);  HAL_Delay(1);
+    lcd2_send_byte(0x01u, 0);  HAL_Delay(2);
+    lcd2_send_byte(0x06u, 0);  HAL_Delay(1);
+    lcd2_send_byte(0x0Cu, 0);  HAL_Delay(1);
 
     if (lcd2_i2c_write(s_backlight) != HAL_OK)
     {
-        ULOG_Error("LCD2", "Init FAILED: no ACK from PCF8574");
+        ULOG_Error("LCD2", "Init", "no ACK from PCF8574");
         return LCD2_ERROR;
     }
 
-    ULOG_Info("LCD2", "Init OK");
+    ULOG_Info("LCD2", "Init", "OK");
     return LCD2_OK;
 }
 
 void LCD2_Clear(void)
 {
     lcd2_send_byte(0x01u, 0);
-    HAL_Delay(2);  /* ≥1.52 ms */
+    HAL_Delay(2);
 }
 
 void LCD2_SetCursor(uint8_t row, uint8_t col)
 {
-    /*
-     * HD44780 DDRAM addresses:
-     *   Row 0: 0x00–0x0F
-     *   Row 1: 0x40–0x4F
-     */
     uint8_t addr = (row == 0u ? 0x00u : 0x40u) + col;
     lcd2_send_byte(0x80u | addr, 0);
     HAL_Delay(1);
@@ -129,7 +92,7 @@ void LCD2_SetCursor(uint8_t row, uint8_t col)
 
 void LCD2_PrintString(const char *str)
 {
-    ULOG_Info("LCD2", str);
+    ULOG_Info("LCD2", "PrintString", str);
     for (int i = 0; str[i] != '\0'; i++)
     {
         lcd2_send_byte((uint8_t)str[i], 1);
@@ -143,10 +106,5 @@ void LCD2_PrintChar(char c)
 
 void LCD2_Backlight(uint8_t on)
 {
-    /*
-     * No-op — backlight is hardwired on (s_backlight = 0x08).
-     * The parameter is accepted to match the interface contract.
-     * Suppress unused-parameter warning:
-     */
     (void)on;
 }

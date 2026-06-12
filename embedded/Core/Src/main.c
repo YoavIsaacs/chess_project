@@ -69,56 +69,44 @@ static void MX_USART2_UART_Init(void);
 
 /* USER CODE END 0 */
 
-/**
-  * @brief  The application entry point.
-  * @retval int
-  */
 int main(void)
 {
-
   /* USER CODE BEGIN 1 */
 
   /* USER CODE END 1 */
 
-  /* MCU Configuration--------------------------------------------------------*/
-
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
 
   /* USER CODE BEGIN Init */
 
   /* USER CODE END Init */
 
-  /* Configure the system clock */
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
 
   /* USER CODE END SysInit */
 
-  /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_ADC1_Init();
   MX_I2C1_Init();
   MX_USART2_UART_Init();
-  /* USER CODE BEGIN 2 */
 
+  /* USER CODE BEGIN 2 */
   ULOG_Init(&huart2);
-  ULOG_Info("MAIN", "Boot OK");
+  ULOG_Info("MAIN", "main", "Boot OK");
 
   JOY_Init(&hadc1, JOYSTICK_CLICK_GPIO_Port, JOYSTICK_CLICK_Pin);
-  ULOG_Info("MAIN", "Joystick init done");
+  ULOG_Info("MAIN", "main", "Joystick init done");
 
   LCD2_Init(&hi2c1);
   LCD2_Clear();
-  ULOG_Info("MAIN", "LCD init done");
+  ULOG_Info("MAIN", "main", "LCD init done");
 
-  ULOG_Info("MAIN", "Entering read loop");
-
+  ULOG_Info("MAIN", "main", "Entering read loop");
   /* USER CODE END 2 */
 
-  /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
@@ -126,25 +114,25 @@ int main(void)
 
     if (j.status == JOY_ERROR)
     {
-      ULOG_Error("JOY", "ADC read failed");
+      ULOG_Error("JOY", "Read", "ADC read failed");
     }
     else
     {
-      ULOG_InfoInt("JOY", "X raw", j.x_raw);
-      ULOG_InfoInt("JOY", "Y raw", j.y_raw);
-      ULOG_InfoInt("JOY", "Click", j.click);
+      ULOG_InfoInt("JOY", "Read", "X raw", j.x_raw);
+      ULOG_InfoInt("JOY", "Read", "Y raw", j.y_raw);
+      ULOG_InfoInt("JOY", "Read", "Click", j.click);
 
       const char *dir_str;
 
       switch (j.direction)
       {
-        case JOY_UP:     dir_str = "UP      "; ULOG_Info("JOY", "Direction: UP");      break;
-        case JOY_DOWN:   dir_str = "DOWN    "; ULOG_Info("JOY", "Direction: DOWN");    break;
-        case JOY_LEFT:   dir_str = "LEFT    "; ULOG_Info("JOY", "Direction: LEFT");    break;
-        case JOY_RIGHT:  dir_str = "RIGHT   "; ULOG_Info("JOY", "Direction: RIGHT");   break;
-        case JOY_CENTRE: dir_str = "CENTRE  "; ULOG_Info("JOY", "Direction: CENTRE");  break;
-        case JOY_NONE:   dir_str = "NONE    "; ULOG_Info("JOY", "Direction: NONE");    break;
-        default:         dir_str = "UNKNOWN "; ULOG_Info("JOY", "Direction: UNKNOWN"); break;
+        case JOY_UP:     dir_str = "UP      "; ULOG_Info("JOY", "Read", "Direction: UP");      break;
+        case JOY_DOWN:   dir_str = "DOWN    "; ULOG_Info("JOY", "Read", "Direction: DOWN");    break;
+        case JOY_LEFT:   dir_str = "LEFT    "; ULOG_Info("JOY", "Read", "Direction: LEFT");    break;
+        case JOY_RIGHT:  dir_str = "RIGHT   "; ULOG_Info("JOY", "Read", "Direction: RIGHT");   break;
+        case JOY_CENTRE: dir_str = "CENTRE  "; ULOG_Info("JOY", "Read", "Direction: CENTRE");  break;
+        case JOY_NONE:   dir_str = "NONE    "; ULOG_Info("JOY", "Read", "Direction: NONE");    break;
+        default:         dir_str = "UNKNOWN "; ULOG_Info("JOY", "Read", "Direction: UNKNOWN"); break;
       }
 
       LCD2_SetCursor(0, 0);
@@ -160,23 +148,14 @@ int main(void)
   /* USER CODE END 3 */
 }
 
-/**
-  * @brief System Clock Configuration
-  * @retval None
-  */
 void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-  /** Configure the main internal regulator output voltage
-  */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
 
-  /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -192,8 +171,6 @@ void SystemClock_Config(void)
     Error_Handler();
   }
 
-  /** Initializes the CPU, AHB and APB buses clocks
-  */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
@@ -207,26 +184,10 @@ void SystemClock_Config(void)
   }
 }
 
-/**
-  * @brief ADC1 Initialization Function
-  * @param None
-  * @retval None
-  */
 static void MX_ADC1_Init(void)
 {
-
-  /* USER CODE BEGIN ADC1_Init 0 */
-
-  /* USER CODE END ADC1_Init 0 */
-
   ADC_ChannelConfTypeDef sConfig = {0};
 
-  /* USER CODE BEGIN ADC1_Init 1 */
-
-  /* USER CODE END ADC1_Init 1 */
-
-  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
-  */
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
@@ -244,8 +205,6 @@ static void MX_ADC1_Init(void)
     Error_Handler();
   }
 
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
   sConfig.Channel = ADC_CHANNEL_0;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
@@ -253,27 +212,10 @@ static void MX_ADC1_Init(void)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN ADC1_Init 2 */
-
-  /* USER CODE END ADC1_Init 2 */
-
 }
 
-/**
-  * @brief I2C1 Initialization Function
-  * @param None
-  * @retval None
-  */
 static void MX_I2C1_Init(void)
 {
-
-  /* USER CODE BEGIN I2C1_Init 0 */
-
-  /* USER CODE END I2C1_Init 0 */
-
-  /* USER CODE BEGIN I2C1_Init 1 */
-
-  /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
   hi2c1.Init.ClockSpeed = 100000;
   hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
@@ -287,27 +229,10 @@ static void MX_I2C1_Init(void)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN I2C1_Init 2 */
-
-  /* USER CODE END I2C1_Init 2 */
-
 }
 
-/**
-  * @brief USART2 Initialization Function
-  * @param None
-  * @retval None
-  */
 static void MX_USART2_UART_Init(void)
 {
-
-  /* USER CODE BEGIN USART2_Init 0 */
-
-  /* USER CODE END USART2_Init 0 */
-
-  /* USER CODE BEGIN USART2_Init 1 */
-
-  /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
   huart2.Init.BaudRate = 115200;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
@@ -320,89 +245,54 @@ static void MX_USART2_UART_Init(void)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN USART2_Init 2 */
-
-  /* USER CODE END USART2_Init 2 */
-
 }
 
-/**
-  * Enable DMA controller clock
-  */
 static void MX_DMA_Init(void)
 {
-
-  /* DMA controller clock enable */
   __HAL_RCC_DMA2_CLK_ENABLE();
-
-  /* DMA interrupt init */
-  /* DMA2_Stream0_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
-
 }
 
-/**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-/* USER CODE BEGIN MX_GPIO_Init_1 */
-/* USER CODE END MX_GPIO_Init_1 */
 
-  /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
-  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(DHT11_GPIO_Port, DHT11_Pin, GPIO_PIN_SET);
 
-  /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : JOYSTICK_CLICK_Pin */
   GPIO_InitStruct.Pin = JOYSTICK_CLICK_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(JOYSTICK_CLICK_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : LD2_Pin */
   GPIO_InitStruct.Pin = LD2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : DHT11_Pin */
   GPIO_InitStruct.Pin = DHT11_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(DHT11_GPIO_Port, &GPIO_InitStruct);
-
-/* USER CODE BEGIN MX_GPIO_Init_2 */
-/* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
 
 /* USER CODE END 4 */
 
-/**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
@@ -414,13 +304,6 @@ void Error_Handler(void)
 }
 
 #ifdef  USE_FULL_ASSERT
-/**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
