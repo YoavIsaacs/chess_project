@@ -23,6 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include "uart_log.h"
 #include "joystick.h"
+#include "lcd_2x16.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -108,6 +109,11 @@ int main(void)
 
   JOY_Init(&hadc1, JOYSTICK_CLICK_GPIO_Port, JOYSTICK_CLICK_Pin);
   ULOG_Info("MAIN", "Joystick init done");
+
+  LCD2_Init(&hi2c1);
+  LCD2_Clear();
+  ULOG_Info("MAIN", "LCD init done");
+
   ULOG_Info("MAIN", "Entering read loop");
 
   /* USER CODE END 2 */
@@ -128,16 +134,21 @@ int main(void)
       ULOG_InfoInt("JOY", "Y raw", j.y_raw);
       ULOG_InfoInt("JOY", "Click", j.click);
 
+      const char *dir_str;
+
       switch (j.direction)
       {
-        case JOY_UP:     ULOG_Info("JOY", "Direction: UP");     break;
-        case JOY_DOWN:   ULOG_Info("JOY", "Direction: DOWN");   break;
-        case JOY_LEFT:   ULOG_Info("JOY", "Direction: LEFT");   break;
-        case JOY_RIGHT:  ULOG_Info("JOY", "Direction: RIGHT");  break;
-        case JOY_CENTRE: ULOG_Info("JOY", "Direction: CENTRE"); break;
-        case JOY_NONE:   ULOG_Info("JOY", "Direction: NONE");   break;
-        default:         ULOG_Info("JOY", "Direction: UNKNOWN"); break;
+        case JOY_UP:     dir_str = "UP      "; ULOG_Info("JOY", "Direction: UP");      break;
+        case JOY_DOWN:   dir_str = "DOWN    "; ULOG_Info("JOY", "Direction: DOWN");    break;
+        case JOY_LEFT:   dir_str = "LEFT    "; ULOG_Info("JOY", "Direction: LEFT");    break;
+        case JOY_RIGHT:  dir_str = "RIGHT   "; ULOG_Info("JOY", "Direction: RIGHT");   break;
+        case JOY_CENTRE: dir_str = "CENTRE  "; ULOG_Info("JOY", "Direction: CENTRE");  break;
+        case JOY_NONE:   dir_str = "NONE    "; ULOG_Info("JOY", "Direction: NONE");    break;
+        default:         dir_str = "UNKNOWN "; ULOG_Info("JOY", "Direction: UNKNOWN"); break;
       }
+
+      LCD2_SetCursor(0, 0);
+      LCD2_PrintString(dir_str);
     }
 
     HAL_Delay(300);

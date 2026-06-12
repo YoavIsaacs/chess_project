@@ -1,6 +1,9 @@
-../Core/Src/lcd_2x16.c:3:6:LCD2_Init	1
-../Core/Src/lcd_2x16.c:7:6:LCD2_Clear	1
-../Core/Src/lcd_2x16.c:11:6:LCD2_SetCursor	1
-../Core/Src/lcd_2x16.c:15:6:LCD2_PrintString	1
-../Core/Src/lcd_2x16.c:19:6:LCD2_Printchar	1
-../Core/Src/lcd_2x16.c:23:6:LCD2_Backlight	1
+../Core/Src/lcd_2x16.c:45:26:lcd2_i2c_write	2
+../Core/Src/lcd_2x16.c:66:13:lcd2_send_nibble	1
+../Core/Src/lcd_2x16.c:83:13:lcd2_send_byte	1
+../Core/Src/lcd_2x16.c:94:13:LCD2_Init	2
+../Core/Src/lcd_2x16.c:153:6:LCD2_Clear	1
+../Core/Src/lcd_2x16.c:160:6:LCD2_SetCursor	2
+../Core/Src/lcd_2x16.c:173:6:LCD2_PrintString	2
+../Core/Src/lcd_2x16.c:182:6:LCD2_PrintChar	1
+../Core/Src/lcd_2x16.c:188:6:LCD2_Backlight	1
