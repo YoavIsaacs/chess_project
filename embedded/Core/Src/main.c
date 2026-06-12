@@ -22,7 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "uart_log.h"
-#include "dht.h"
+#include "joystick.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -42,6 +42,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
 
 I2C_HandleTypeDef hi2c1;
 
@@ -54,6 +55,7 @@ UART_HandleTypeDef huart2;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_USART2_UART_Init(void);
@@ -95,6 +97,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_ADC1_Init();
   MX_I2C1_Init();
   MX_USART2_UART_Init();
@@ -103,11 +106,8 @@ int main(void)
   ULOG_Init(&huart2);
   ULOG_Info("MAIN", "Boot OK");
 
-  DHT_Init();
-  ULOG_Info("MAIN", "DHT init done");
-
-  /* Allow the DHT11 1 second to stabilise after power-on */
-  HAL_Delay(1000);
+  JOY_Init(&hadc1, JOYSTICK_CLICK_GPIO_Port, JOYSTICK_CLICK_Pin);
+  ULOG_Info("MAIN", "Joystick init done");
   ULOG_Info("MAIN", "Entering read loop");
 
   /* USER CODE END 2 */
@@ -116,26 +116,31 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    ULOG_Info("MAIN", "Reading DHT11...");
+    JOY_Data j = JOY_Read();
 
-    DHT_Data d = DHT_Read();
-
-    if (d.status == DHT_OK)
+    if (j.status == JOY_ERROR)
     {
-      ULOG_InfoInt("DHT", "Temperature (C)", d.temperature_c);
-      ULOG_InfoInt("DHT", "Humidity    (%)", d.humidity_pct);
-    }
-    else if (d.status == DHT_ERROR_NO_RESPONSE)
-    {
-      ULOG_Info("DHT", "ERROR: no response from sensor");
+      ULOG_Error("JOY", "ADC read failed");
     }
     else
     {
-      ULOG_Info("DHT", "ERROR: checksum mismatch");
+      ULOG_InfoInt("JOY", "X raw", j.x_raw);
+      ULOG_InfoInt("JOY", "Y raw", j.y_raw);
+      ULOG_InfoInt("JOY", "Click", j.click);
+
+      switch (j.direction)
+      {
+        case JOY_UP:     ULOG_Info("JOY", "Direction: UP");     break;
+        case JOY_DOWN:   ULOG_Info("JOY", "Direction: DOWN");   break;
+        case JOY_LEFT:   ULOG_Info("JOY", "Direction: LEFT");   break;
+        case JOY_RIGHT:  ULOG_Info("JOY", "Direction: RIGHT");  break;
+        case JOY_CENTRE: ULOG_Info("JOY", "Direction: CENTRE"); break;
+        case JOY_NONE:   ULOG_Info("JOY", "Direction: NONE");   break;
+        default:         ULOG_Info("JOY", "Direction: UNKNOWN"); break;
+      }
     }
 
-    ULOG_Info("MAIN", "I'm here, waiting 2s");
-    HAL_Delay(2000);
+    HAL_Delay(300);
 
     /* USER CODE END WHILE */
 
@@ -214,13 +219,13 @@ static void MX_ADC1_Init(void)
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
-  hadc1.Init.ScanConvMode = ENABLE;
+  hadc1.Init.ScanConvMode = DISABLE;
   hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 2;
+  hadc1.Init.NbrOfConversion = 1;
   hadc1.Init.DMAContinuousRequests = DISABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
@@ -233,15 +238,6 @@ static void MX_ADC1_Init(void)
   sConfig.Channel = ADC_CHANNEL_0;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
-  sConfig.Channel = ADC_CHANNEL_1;
-  sConfig.Rank = 2;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -320,6 +316,22 @@ static void MX_USART2_UART_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA2_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA2_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -351,7 +363,7 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin : JOYSTICK_CLICK_Pin */
   GPIO_InitStruct.Pin = JOYSTICK_CLICK_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(JOYSTICK_CLICK_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : LD2_Pin */
