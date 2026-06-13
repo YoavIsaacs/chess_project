@@ -13,6 +13,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "uart_log.h"
+#include "dht.h"
 #include "joystick.h"
 #include "lcd_2x16.h"
 #include "lcd_4x20.h"
@@ -28,6 +29,12 @@ typedef enum
     PLAYER_BLACK = 1
 } ActivePlayer;
 
+typedef enum
+{
+    LCD2_MODE_A = 0,   /* Clock display  */
+    LCD2_MODE_B = 1    /* Environmental  */
+} LCD2_Mode;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -35,6 +42,7 @@ typedef enum
 
 #define CLOCK_START_MS      180000UL   /* Hard-coded start time: 3:00 (Blitz)  */
 #define BTN_DEBOUNCE_MS     50U        /* Ignore button edges within this window */
+#define DHT_POLL_INTERVAL_MS 5000U    /* Sample DHT every 5 seconds            */
 
 /* USER CODE END PD */
 
@@ -58,19 +66,23 @@ static          uint32_t s_black_ms     = CLOCK_START_MS;
 static          uint32_t s_last_tick_ms = 0;              /* Captured in ISR             */
 static          ActivePlayer s_active   = PLAYER_WHITE;
 
+/* --- LCD2 mode ----------------------------------------------------------- */
+static LCD2_Mode s_lcd2_mode = LCD2_MODE_B;               /* Hardcoded for Step 2; Step 4 adds cycling */
+
 /* --- LCD4 display gating ------------------------------------------------- */
 static uint32_t s_last_white_disp_s = UINT32_MAX;         /* UINT32_MAX forces first write */
 static uint32_t s_last_black_disp_s = UINT32_MAX;
-
-/* --- LCD2 display gating ------------------------------------------------- */
-static uint32_t s_last_white_disp_s_lcd2 = UINT32_MAX;
-static uint32_t s_last_black_disp_s_lcd2 = UINT32_MAX;
 
 /* --- Button debounce ----------------------------------------------------- */
 static uint32_t s_btn_white_last_ms = 0;
 static uint32_t s_btn_black_last_ms = 0;
 static uint8_t  s_btn_white_prev    = 1;                  /* pull-up: idle = 1           */
 static uint8_t  s_btn_black_prev    = 1;
+
+/* --- DHT state ----------------------------------------------------------- */
+static uint32_t s_last_dht_ms  = 0;                       /* Timestamp of last DHT read  */
+static int8_t   s_last_temp    = -128;                    /* Sentinel: forces first write */
+static int8_t   s_last_hum     = -128;
 
 /* USER CODE END PV */
 
@@ -90,6 +102,9 @@ static void CLOCK_DrawStaticRows(void);
 static void CLOCK_RefreshDisplay(void);
 static void CLOCK_HandleButtons(void);
 static void CLOCK_HandleTick(void);
+
+static void LCD2B_DrawStatic(void);
+static void LCD2B_Refresh(void);
 
 /* USER CODE END PFP */
 
@@ -116,33 +131,28 @@ static void CLOCK_FormatTime(uint32_t ms, char *buf, uint8_t buf_len)
 }
 
 /**
- * @brief  Write static label rows to LCD4 and LCD2. Called once at startup.
+ * @brief  Write static label row to LCD4 only. Called once at startup.
  *
  *         LCD4 row 2 (20 chars): "Black          White"
- *                                 ^col0          ^col15 (e of White at col19)
  *
- *         LCD2 row 0 (16 chars): "Black    White  "
- *                                 ^col0    ^col9
+ * @note   LCD2 static content is now owned by LCD2B_DrawStatic() (Mode B)
+ *         or the equivalent Mode A init (Step 4). This function no longer
+ *         touches LCD2.
  */
 static void CLOCK_DrawStaticRows(void)
 {
     /* LCD4 — "Black"(5) + 10 spaces + "White"(5) = 20 chars */
     LCD4_SetCursor(2, 0);
     LCD4_PrintString("Black          White");
-
-    /* LCD2 — "Black"(5) + 4 spaces + "White"(5) + 2 spaces = 16 chars */
-    LCD2_SetCursor(0, 0);
-    LCD2_PrintString("Black      White");
 }
 
 /**
- * @brief  Refresh time rows on LCD4 and LCD2 only when displayed value changes.
+ * @brief  Refresh time row on LCD4 only when displayed value changes.
  *
  *         LCD4 row 3: Black time at col 0, White time at col 15.
- *         LCD2 row 1: Black time at col 0, White time at col 11.
  *
- *         Separate gate variables for LCD4 and LCD2 — gates are evaluated
- *         independently so LCD2 is not affected by LCD4 gate updates.
+ * @note   LCD2 clock display (Mode A) is intentionally absent here.
+ *         Mode A path will be added in Step 4 alongside the mode-cycle button.
  */
 static void CLOCK_RefreshDisplay(void)
 {
@@ -165,23 +175,6 @@ static void CLOCK_RefreshDisplay(void)
         LCD4_SetCursor(3, 15);
         LCD4_PrintString(buf);
         s_last_white_disp_s = white_s;
-    }
-
-    /* --- LCD2 row 1 -------------------------------------------------- */
-    if (black_s != s_last_black_disp_s_lcd2)
-    {
-        CLOCK_FormatTime(s_black_ms, buf, sizeof(buf));
-        LCD2_SetCursor(1, 0);
-        LCD2_PrintString(buf);
-        s_last_black_disp_s_lcd2 = black_s;
-    }
-
-    if (white_s != s_last_white_disp_s_lcd2)
-    {
-        CLOCK_FormatTime(s_white_ms, buf, sizeof(buf));
-        LCD2_SetCursor(1, 11);
-        LCD2_PrintString(buf);
-        s_last_white_disp_s_lcd2 = white_s;
     }
 }
 
@@ -257,6 +250,74 @@ static void CLOCK_HandleTick(void)
     }
 }
 
+/**
+ * @brief  Write static content for LCD2 Mode B (Environmental).
+ *         Row 1 noise placeholder is written once here and not touched
+ *         again until Step 3 adds real microphone sampling.
+ *
+ *         Call once when entering Mode B (or at startup when Mode B is
+ *         the hardcoded default).
+ */
+static void LCD2B_DrawStatic(void)
+{
+    /* Row 1 — noise placeholder (Step 3 will overwrite with real bar) */
+    LCD2_SetCursor(1, 0);
+    LCD2_PrintString("Noise: ----     ");
+    ULOG_Info("LCD2", "LCD2B_DrawStatic", "Mode B static rows drawn");
+}
+
+/**
+ * @brief  Poll DHT and refresh LCD2 Mode B row 0 only when values change.
+ *
+ *         Cadence: DHT_POLL_INTERVAL_MS (5 s). Uses s_last_dht_ms gated
+ *         by HAL_GetTick(). On first call (s_last_dht_ms == 0) the
+ *         subtraction wraps and the condition is immediately true, forcing
+ *         a read on the first loop iteration.
+ *
+ *         Display gate: s_last_temp / s_last_hum track the last written
+ *         values; LCD2 is only written when either changes.
+ *
+ *         Format — row 0, 16 chars: "T:%2dC  H:%2d%%    "
+ *         cols:  T: 0-1 | value 2-3 | C 4 | gap 5-6 | H: 7-8 | value 9-10 | % 11 | pad 12-15
+ */
+static void LCD2B_Refresh(void)
+{
+    uint32_t now = HAL_GetTick();
+
+    if ((now - s_last_dht_ms) < DHT_POLL_INTERVAL_MS)
+    {
+        return;
+    }
+    s_last_dht_ms = now;
+
+    DHT_Data d = DHT_Read();
+
+    if (d.status != DHT_OK)
+    {
+        ULOG_Error("LCD2", "LCD2B_Refresh", "DHT read failed");
+        return;
+    }
+
+    int8_t temp = (int8_t)d.temperature_c;
+    int8_t hum  = (int8_t)d.humidity_pct;
+
+    if (temp == s_last_temp && hum == s_last_hum)
+    {
+        return;
+    }
+
+    char buf[17];
+    snprintf(buf, sizeof(buf), "T:%2dC  H:%2d%%    ", temp, hum);
+
+    LCD2_SetCursor(0, 0);
+    LCD2_PrintString(buf);
+
+    s_last_temp = temp;
+    s_last_hum  = hum;
+
+    ULOG_Info("LCD2", "LCD2B_Refresh", "DHT display updated");
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -289,6 +350,9 @@ int main(void)
     ULOG_Init(&huart2);
     ULOG_Info("MAIN", "main", "Boot OK");
 
+    DHT_Init();
+    ULOG_Info("MAIN", "main", "DHT init OK");
+
     if (LCD4_Init(&hi2c1) != LCD4_OK)
     {
         ULOG_Error("MAIN", "main", "LCD4 init failed");
@@ -311,7 +375,13 @@ int main(void)
     JOY_Init(&hadc1, JOYSTICK_CLICK_GPIO_Port, JOYSTICK_CLICK_Pin);
     ULOG_Info("MAIN", "main", "Joystick init OK");
 
-    /* Draw static labels on both LCDs, then initial times */
+    /* Draw static content for the active LCD2 mode */
+    if (s_lcd2_mode == LCD2_MODE_B)
+    {
+        LCD2B_DrawStatic();
+    }
+
+    /* Draw static labels on LCD4, then initial times */
     LCD4_Clear();
     CLOCK_DrawStaticRows();
     CLOCK_RefreshDisplay();
@@ -333,6 +403,11 @@ int main(void)
         }
 
         CLOCK_RefreshDisplay();
+
+        if (s_lcd2_mode == LCD2_MODE_B)
+        {
+            LCD2B_Refresh();
+        }
 
         /* USER CODE END WHILE */
         /* USER CODE BEGIN 3 */
