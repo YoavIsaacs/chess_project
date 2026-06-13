@@ -3411,7 +3411,7 @@ void ULOG_Info(const char *tag, const char *func, const char *msg)
     if (len > 0) ulog_send(buf, (uint16_t)len);
 }
 
-void ULOG_InfoInt(const char *tag, const char *func, const char *msg, int32_t value)
+void ULOG_Error(const char *tag, const char *func, const char *msg)
 {
  8001804:	b580      	push	{r7, lr}
  8001806:	b0a8      	sub	sp, #160	@ 0xa0
