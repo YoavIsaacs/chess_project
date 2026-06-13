@@ -15,6 +15,8 @@
 #include "uart_log.h"
 #include "joystick.h"
 #include "lcd_2x16.h"
+#include "lcd_4x20.h"
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
