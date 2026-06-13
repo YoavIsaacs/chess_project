@@ -71,6 +71,10 @@ void Error_Handler(void);
 #define JOYSTICK_CLICK_GPIO_Port GPIOA
 #define LD2_Pin GPIO_PIN_5
 #define LD2_GPIO_Port GPIOA
+#define WHITE_CLOCK_Pin GPIO_PIN_6
+#define WHITE_CLOCK_GPIO_Port GPIOA
+#define BLACK_CLOCK_Pin GPIO_PIN_7
+#define BLACK_CLOCK_GPIO_Port GPIOA
 #define DHT11_Pin GPIO_PIN_12
 #define DHT11_GPIO_Port GPIOB
 #define TMS_Pin GPIO_PIN_13
