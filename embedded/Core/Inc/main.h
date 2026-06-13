@@ -75,6 +75,10 @@ void Error_Handler(void);
 #define WHITE_CLOCK_GPIO_Port GPIOA
 #define BLACK_CLOCK_Pin GPIO_PIN_7
 #define BLACK_CLOCK_GPIO_Port GPIOA
+#define LCD_MODE_SWITCH_Pin GPIO_PIN_4
+#define LCD_MODE_SWITCH_GPIO_Port GPIOC
+#define MIC_INPUT_Pin GPIO_PIN_5
+#define MIC_INPUT_GPIO_Port GPIOC
 #define DHT11_Pin GPIO_PIN_12
 #define DHT11_GPIO_Port GPIOB
 #define TMS_Pin GPIO_PIN_13
