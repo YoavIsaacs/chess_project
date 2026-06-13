@@ -3,6 +3,11 @@
 
 #include "stm32f4xx_hal.h"
 
+#define JOY_THRESH_LOW      800
+#define JOY_THRESH_HIGH     3300
+#define JOY_DEADZONE_LOW    1548
+#define JOY_DEADZONE_HIGH   2548
+
 typedef enum{
   JOY_NONE,
   JOY_UP,

@@ -413,12 +413,12 @@ Disassembly of section .text:
  80005ac:	4770      	bx	lr
  80005ae:	bf00      	nop
 
-080005b0 <DHT_Init>:
-#define MOCK_STEPS (sizeof(mock_temperature) / sizeof(mock_temperature[0]))
+080005b0 <JOY_Init>:
+static ADC_HandleTypeDef *s_hadc;
+static GPIO_TypeDef      *s_clickPort;
+static uint16_t           s_clickPin;
 
-static uint32_t mock_index = 0;
-
-void DHT_Init(void)
+void JOY_Init(ADC_HandleTypeDef *hadc, GPIO_TypeDef *clickPort, uint16_t clickPin)
 {
  80005b0:	b580      	push	{r7, lr}
  80005b2:	b084      	sub	sp, #16
@@ -1906,11 +1906,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
 /* ---- CubeMX-generated functions below — do not edit -------------------- */
 
-08000738 <SystemClock_Config>:
-/**
-  * @brief System Clock Configuration
-  * @retval None
-  */
 void SystemClock_Config(void)
 {
  8000f54:	b580      	push	{r7, lr}
@@ -2030,11 +2025,6 @@ void SystemClock_Config(void)
 
 0800102c <MX_ADC1_Init>:
 
-08000814 <MX_ADC1_Init>:
-  * @brief ADC1 Initialization Function
-  * @param None
-  * @retval None
-  */
 static void MX_ADC1_Init(void)
 {
  800102c:	b580      	push	{r7, lr}
@@ -2132,11 +2122,6 @@ static void MX_ADC1_Init(void)
 
 080010d0 <MX_I2C1_Init>:
 
-080008b8 <MX_I2C1_Init>:
-  * @brief I2C1 Initialization Function
-  * @param None
-  * @retval None
-  */
 static void MX_I2C1_Init(void)
 {
  80010d0:	b580      	push	{r7, lr}
@@ -2278,11 +2263,6 @@ static void MX_TIM2_Init(void)
 
 080011c8 <MX_USART2_UART_Init>:
 
-08000914 <MX_USART2_UART_Init>:
-  * @brief USART2 Initialization Function
-  * @param None
-  * @retval None
-  */
 static void MX_USART2_UART_Init(void)
 {
  80011c8:	b580      	push	{r7, lr}
@@ -2371,11 +2351,6 @@ static void MX_DMA_Init(void)
 
 0800125c <MX_GPIO_Init>:
 
-08000968 <MX_GPIO_Init>:
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
 static void MX_GPIO_Init(void)
 {
  800125c:	b580      	push	{r7, lr}
@@ -2526,11 +2501,6 @@ static void MX_GPIO_Init(void)
 
 08001380 <Error_Handler>:
 
-08000a8c <Error_Handler>:
-/**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
 void Error_Handler(void)
 {
  8001380:	b480      	push	{r7}
@@ -3368,7 +3338,6 @@ void ULOG_Init(UART_HandleTypeDef *huart)
 
 08001788 <ulog_send>:
 
-/* Internal send — blocks until done */
 static void ulog_send(const char *buf, uint16_t len)
 {
  8001788:	b580      	push	{r7, lr}
@@ -3400,7 +3369,7 @@ static void ulog_send(const char *buf, uint16_t len)
 
 080017b8 <ULOG_Info>:
 
-void ULOG_Info(const char *tag, const char *msg)
+void ULOG_Info(const char *tag, const char *func, const char *msg)
 {
  80017b8:	b580      	push	{r7, lr}
  80017ba:	b0a8      	sub	sp, #160	@ 0xa0
@@ -3442,7 +3411,7 @@ void ULOG_Info(const char *tag, const char *msg)
     if (len > 0) ulog_send(buf, (uint16_t)len);
 }
 
-void ULOG_InfoInt(const char *tag, const char *msg, int32_t value)
+void ULOG_InfoInt(const char *tag, const char *func, const char *msg, int32_t value)
 {
  8001804:	b580      	push	{r7, lr}
  8001806:	b0a8      	sub	sp, #160	@ 0xa0
