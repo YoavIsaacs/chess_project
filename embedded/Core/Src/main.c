@@ -26,8 +26,12 @@
 
 typedef enum
 {
-    PHASE_MENU    = 0,   /* Pre-game menu (stages 1-6)                        */
-    PHASE_RUNNING = 1    /* Game active — timers counting, all sensors active */
+    PHASE_MENU           = 0,   /* Pre-game menu (stages 1-6)                        */
+    PHASE_RUNNING        = 1,   /* Game active — timers counting, all sensors active */
+    PHASE_PAUSED         = 2,   /* Timers frozen — full-screen pause box on LCD4     */
+    PHASE_RESULT_SELECT  = 3,   /* User selects game result (manual end only)        */
+    PHASE_RESULT_CONFIRM = 4,   /* Confirmation before saving (manual + timeout)     */
+    PHASE_GAME_OVER      = 5    /* Terminal state after result confirmed             */
 } App_Phase;
 
 typedef enum
@@ -35,6 +39,15 @@ typedef enum
     PLAYER_WHITE = 0,
     PLAYER_BLACK = 1
 } ActivePlayer;
+
+typedef enum
+{
+    RESULT_WHITE_WINS    = 0,
+    RESULT_BLACK_WINS    = 1,
+    RESULT_DRAW          = 2,
+    RESULT_WHITE_TIMEOUT = 3,   /* Black flag-fell; White wins on time */
+    RESULT_BLACK_TIMEOUT = 4    /* White flag-fell; Black wins on time */
+} GameResult;
 
 typedef enum
 {
@@ -127,8 +140,46 @@ static uint8_t  s_last_bar_len = 0xFF;                 /* 0xFF forces first writ
 /* --- LCD2 Mode B forced redraw ------------------------------------------- */
 static uint8_t  s_lcd2b_needs_redraw = 0;
 
+/* --- LCD2 Mode C display sentinels --------------------------------------- */
+/* Force a redraw whenever the displayed move index or eval changes.
+ * UINT8_MAX / INT16_MAX act as "never displayed" sentinels so the first
+ * call to LCD2C_Refresh() always writes, regardless of mock data values.  */
+static uint8_t  s_last_lcd2c_mock_idx = UINT8_MAX;
+static int16_t  s_last_lcd2c_eval_cp  = INT16_MAX;
+
 /* --- Timeout LED flash phase --------------------------------------------- */
 static uint8_t  s_timeout_led_phase = 0;
+
+/* =========================================================================
+ * Step 9 — Pause / End Game / Result state
+ * ========================================================================= */
+
+/* Cached player first names for the confirmation screen row 2 */
+static char s_white_first[MENU_NAME_MAX_LEN + 1U];
+static char s_black_first[MENU_NAME_MAX_LEN + 1U];
+
+/* Pause screen cursor: 0 = RESUME highlighted, 1 = END highlighted */
+static uint8_t s_pause_cursor = 0;
+
+/* Result selection cursor: 0 = White wins, 1 = Black wins, 2 = Draw */
+static uint8_t s_result_cursor = 0;
+
+/* The result that was chosen / auto-filled */
+static GameResult s_result = RESULT_WHITE_WINS;
+
+/* Confirmation cursor: 0 = Yes, 1 = No */
+static uint8_t s_confirm_cursor = 0;
+
+/* Set to 1 when result was auto-filled by timeout (No → PAUSED, not SELECT) */
+static uint8_t s_is_timeout_result = 0;
+
+/* Timestamp of game start — pause input ignored for first 2 s */
+static uint32_t s_game_start_ms = 0;
+
+/* Debounce timestamps for joystick click in new phases */
+static uint32_t s_joy_click_last_ms = 0;
+static uint8_t  s_joy_click_prev    = 1;   /* 1 = released (pull-up at rest) */
+#define JOY_CLICK_DEBOUNCE_MS   80U
 
 /* =========================================================================
  * Mock game data
@@ -232,10 +283,30 @@ static void LCD2A_Refresh(void);
 static void LCD2B_DrawStatic(void);
 static void LCD2B_Refresh(void);
 static void LCD2C_DrawStatic(void);
+static void LCD2C_Refresh(void);
 static void LCD2_EnterMode(LCD2_Mode mode);
 static void LCD2_HandleButton3(void);
 
 static void LED_SetState(void);
+static void LED_SetPaused(void);
+static void LED_SetGameOver(void);
+
+static void PAUSE_Enter(void);
+static void PAUSE_Resume(void);
+static void PAUSE_DrawBox(void);
+static void PAUSE_HandleInput(void);
+
+static void RESULT_SELECT_Draw(void);
+static void RESULT_SELECT_HandleInput(void);
+
+static void RESULT_CONFIRM_Draw(void);
+static void RESULT_CONFIRM_HandleInput(void);
+
+static void TIMEOUT_Enter(void);
+static void GAME_Over(void);
+
+static void LCD2_DrawPauseOverlay(void);
+static void LCD2_ExitPause(void);
 
 /* USER CODE END PFP */
 
@@ -273,6 +344,28 @@ static void GAME_Start(const MENU_Settings *cfg)
     s_eval_visible = cfg->eval_visible;
     s_active       = PLAYER_WHITE;
 
+    /* Cache player first names for the confirmation screen */
+    strncpy(s_white_first, cfg->white_first, MENU_NAME_MAX_LEN);
+    s_white_first[MENU_NAME_MAX_LEN] = '\0';
+    strncpy(s_black_first, cfg->black_first, MENU_NAME_MAX_LEN);
+    s_black_first[MENU_NAME_MAX_LEN] = '\0';
+
+    /* Reset Step 9 state */
+    s_pause_cursor      = 0;
+    s_result_cursor     = 0;
+    s_result            = RESULT_WHITE_WINS;
+    s_confirm_cursor    = 0;
+    s_is_timeout_result = 0;
+    s_joy_click_last_ms = HAL_GetTick();
+    s_game_start_ms     = HAL_GetTick();
+    /* Prime prev from the live pin so the first CLOCK_HandleButtons call sees
+     * no falling edge — prevents an immediate pause if the joystick is still
+     * held from the menu's start-click. */
+    {
+        JOY_Data joy = JOY_Read();
+        s_joy_click_prev = joy.click;
+    }
+
     /* Reset clock display sentinels */
     s_last_white_disp_s      = UINT32_MAX;
     s_last_black_disp_s      = UINT32_MAX;
@@ -282,6 +375,8 @@ static void GAME_Start(const MENU_Settings *cfg)
     s_last_temp               = -128;
     s_last_hum                = -128;
     s_timeout_led_phase       = 0;
+    s_last_lcd2c_mock_idx     = UINT8_MAX;
+    s_last_lcd2c_eval_cp      = INT16_MAX;
 
     /* Reset mock game data */
     s_game_started  = 0;
@@ -640,6 +735,22 @@ static void CLOCK_HandleButtons(void)
         }
     }
     s_btn_black_prev = btn_black;
+
+    /* Joystick click during RUNNING → enter PAUSED.
+     * Ignored for the first 2 s after game start to prevent the menu's
+     * start-click from immediately triggering a pause. */
+    {
+        JOY_Data joy = JOY_Read();
+        uint32_t now_joy = HAL_GetTick();
+        if (s_joy_click_prev == 1 && joy.click == 0 &&
+            (now_joy - s_joy_click_last_ms) >= JOY_CLICK_DEBOUNCE_MS &&
+            (now_joy - s_game_start_ms) >= 2000U)
+        {
+            s_joy_click_last_ms = now_joy;
+            PAUSE_Enter();
+        }
+        s_joy_click_prev = joy.click;
+    }
 }
 
 /**
@@ -666,6 +777,16 @@ static void CLOCK_HandleTick(void)
 
     s_timeout_led_phase ^= 1;
     LED_SetState();
+
+    /* Timeout detection — must be after decrement */
+    if (s_active == PLAYER_WHITE && s_white_ms == 0)
+    {
+        TIMEOUT_Enter();
+    }
+    else if (s_active == PLAYER_BLACK && s_black_ms == 0)
+    {
+        TIMEOUT_Enter();
+    }
 }
 
 /**
@@ -687,6 +808,59 @@ static void LED_SetState(void)
         (s_active == PLAYER_BLACK && !black_timeout) ? GPIO_PIN_SET : GPIO_PIN_RESET);
 
     ULOG_Info("LED", "Set", (s_active == PLAYER_WHITE) ? "White turn" : "Black turn");
+}
+
+/**
+ * @brief  Flash all four LEDs in sync while the game is paused.
+ *         Called on every TIM2 tick during PHASE_PAUSED.
+ */
+static void LED_SetPaused(void)
+{
+    GPIO_PinState state = s_timeout_led_phase ? GPIO_PIN_SET : GPIO_PIN_RESET;
+    HAL_GPIO_WritePin(GPIOB, WHITE_TURN_Pin,    state);
+    HAL_GPIO_WritePin(GPIOB, WHITE_TIMEOUT_Pin, state);
+    HAL_GPIO_WritePin(GPIOB, BLACK_TURN_Pin,    state);
+    HAL_GPIO_WritePin(GPIOB, BLACK_TIMEOUT_Pin, state);
+}
+
+/**
+ * @brief  Flash LEDs to indicate game result during PHASE_GAME_OVER.
+ *         White win:  both White LEDs flash, Black LEDs off.
+ *         Black win:  both Black LEDs flash, White LEDs off.
+ *         Draw:       both Turn LEDs flash, both Timeout LEDs off.
+ *         Called on every TIM2 tick during PHASE_GAME_OVER.
+ */
+static void LED_SetGameOver(void)
+{
+    GPIO_PinState on  = s_timeout_led_phase ? GPIO_PIN_SET : GPIO_PIN_RESET;
+    GPIO_PinState off = GPIO_PIN_RESET;
+
+    switch (s_result)
+    {
+        case RESULT_WHITE_WINS:
+        case RESULT_WHITE_TIMEOUT:
+            HAL_GPIO_WritePin(GPIOB, WHITE_TURN_Pin,    on);
+            HAL_GPIO_WritePin(GPIOB, WHITE_TIMEOUT_Pin, on);
+            HAL_GPIO_WritePin(GPIOB, BLACK_TURN_Pin,    off);
+            HAL_GPIO_WritePin(GPIOB, BLACK_TIMEOUT_Pin, off);
+            break;
+
+        case RESULT_BLACK_WINS:
+        case RESULT_BLACK_TIMEOUT:
+            HAL_GPIO_WritePin(GPIOB, WHITE_TURN_Pin,    off);
+            HAL_GPIO_WritePin(GPIOB, WHITE_TIMEOUT_Pin, off);
+            HAL_GPIO_WritePin(GPIOB, BLACK_TURN_Pin,    on);
+            HAL_GPIO_WritePin(GPIOB, BLACK_TIMEOUT_Pin, on);
+            break;
+
+        case RESULT_DRAW:
+        default:
+            HAL_GPIO_WritePin(GPIOB, WHITE_TURN_Pin,    on);
+            HAL_GPIO_WritePin(GPIOB, WHITE_TIMEOUT_Pin, off);
+            HAL_GPIO_WritePin(GPIOB, BLACK_TURN_Pin,    on);
+            HAL_GPIO_WritePin(GPIOB, BLACK_TIMEOUT_Pin, off);
+            break;
+    }
 }
 
 /**
@@ -815,16 +989,117 @@ static void LCD2B_Refresh(void)
 }
 
 /**
- * @brief  Write static placeholder for LCD2 Mode C (Opponent view, TODO until Step 10).
+ * @brief  Write static placeholder for LCD2 Mode C (Opponent view).
+ *
+ *         Shown before the first move is made.  Once game data is available,
+ *         LCD2C_Refresh() overwrites row 0 with live values.
+ *
+ *         Row 0: "Move:---- Ev----" (16 chars — dashes until data arrives)
+ *         Row 1: "                " (16 spaces — blank)
+ *
+ *         In Step 10, the UART handler populates s_mock_idx / s_move_number /
+ *         s_game_started with real Pi data; LCD2C_Refresh() then just works.
  */
 static void LCD2C_DrawStatic(void)
 {
     LCD2_Clear();
     LCD2_SetCursor(0, 0);
-    LCD2_PrintString("MODE C          ");
+    LCD2_PrintString("Move:---- Ev----");
     LCD2_SetCursor(1, 0);
-    LCD2_PrintString("TODO            ");
+    LCD2_PrintString("                ");
     ULOG_Info("LCD2", "LCD2C_DrawStatic", "Mode C static rows drawn");
+}
+
+/**
+ * @brief  Refresh LCD2 Mode C (Opponent view) when displayed values change.
+ *
+ *         Row 0 layout (16 chars):
+ *           Before first move: static placeholder — no-op, return early.
+ *           After first move, eval HIDDEN:
+ *             "Move: #NN       "  (6 + 3 + 7 = 16)
+ *           After first move, eval VISIBLE:
+ *             "Move:#NN Ev+1.3 "  (6 + 2 + 3 + 5 = 16)
+ *
+ *         Reads directly from the same shared state that LCD4_RefreshMoveRow()
+ *         and LCD4_RefreshEvalRow() use — s_game_started, s_move_number,
+ *         s_mock_idx, k_mock_eval_cp[].  In Step 10 those variables (or a
+ *         replacement struct) are written by the UART receive handler instead
+ *         of the mock arrays; this function needs no changes at that point.
+ *
+ *         Gated by s_last_lcd2c_mock_idx and s_last_lcd2c_eval_cp so the LCD2
+ *         bus is only touched when the content actually changes.
+ */
+static void LCD2C_Refresh(void)
+{
+    if (!s_game_started)
+        return;   /* Static placeholder already drawn by LCD2C_DrawStatic */
+
+    uint8_t  cur_idx = s_mock_idx % MOCK_EVAL_COUNT;
+    int16_t  eval_cp = k_mock_eval_cp[cur_idx];
+
+    /* Gate: skip if nothing has changed */
+    if (cur_idx == s_last_lcd2c_mock_idx && eval_cp == s_last_lcd2c_eval_cp)
+        return;
+
+    s_last_lcd2c_mock_idx = cur_idx;
+    s_last_lcd2c_eval_cp  = eval_cp;
+
+    char row0[17];   /* 16 chars + null */
+
+    /* Move number — always shown; capped at 99 like LCD4_RefreshLabelRow */
+    uint8_t disp_move = (s_move_number > 99u) ? 99u : s_move_number;
+
+    if (s_eval_visible)
+    {
+        /* Format eval as ±N.N (same logic as LCD4_RefreshEvalRow) */
+        int16_t abs_cp = (eval_cp < 0) ? (int16_t)(-eval_cp) : eval_cp;
+        int16_t whole  = abs_cp / 100;
+        int16_t tenth  = (abs_cp % 100) / 10;
+        char    sign   = (eval_cp >= 0) ? '+' : '-';
+        char    eval_str[6];   /* "+99.9\0" = 5 + null */
+        snprintf(eval_str, sizeof(eval_str), "%c%d.%d", sign, (int)whole, (int)tenth);
+
+        /* "Move:#NN Ev+1.3 "  (16 chars)
+         *  'Move:#' = 6, '%02u' = 2, ' Ev' = 3, eval left-padded into 5 = 16 */
+        snprintf(row0, sizeof(row0), "Move:#%02u Ev%-5s", (unsigned)disp_move, eval_str);
+    }
+    else
+    {
+        /* "Move: #NN       "  (16 chars)
+         *  'Move: ' = 6, '#%02u' = 3, 7 trailing spaces = 16 */
+        snprintf(row0, sizeof(row0), "Move: #%02u       ", (unsigned)disp_move);
+    }
+
+    LCD2_SetCursor(0, 0);
+    LCD2_PrintString(row0);
+    ULOG_Info("LCD2", "LCD2C_Refresh", row0);
+}
+
+/**
+ * @brief  Draw the pause overlay on LCD2 for modes A and C.
+ *         Mode B is unaffected — live sensor updates continue.
+ */
+static void LCD2_DrawPauseOverlay(void)
+{
+    if (s_lcd2_mode == LCD2_MODE_B)
+        return;   /* Mode B shows live data through pause */
+
+    LCD2_Clear();
+    LCD2_SetCursor(0, 0);
+    LCD2_PrintString("                ");   /* row 0 blank */
+    LCD2_SetCursor(1, 0);
+    LCD2_PrintString("    PAUSED      ");
+    ULOG_Info("LCD2", "DrawPauseOverlay", "Pause overlay drawn");
+}
+
+/**
+ * @brief  Restore LCD2 content after resuming from pause.
+ *         Re-enters the current mode so static rows and live data reappear.
+ */
+static void LCD2_ExitPause(void)
+{
+    LCD2_EnterMode(s_lcd2_mode);
+    ULOG_Info("LCD2", "ExitPause", "Restored LCD2 mode content");
 }
 
 /**
@@ -853,7 +1128,10 @@ static void LCD2_EnterMode(LCD2_Mode mode)
             break;
 
         case LCD2_MODE_C:
+            s_last_lcd2c_mock_idx = UINT8_MAX;   /* force redraw on next Refresh */
+            s_last_lcd2c_eval_cp  = INT16_MAX;
             LCD2C_DrawStatic();
+            LCD2C_Refresh();   /* populate immediately if game has started */
             ULOG_Info("LCD2", "EnterMode", "C");
             break;
 
@@ -885,9 +1163,509 @@ static void LCD2_HandleButton3(void)
         }
 
         LCD2_EnterMode(next);
+
+        /* If game is currently paused, re-apply the pause overlay on modes
+         * A and C (mode B is unaffected and shows live data through pause). */
+        if (s_phase == PHASE_PAUSED)
+        {
+            LCD2_DrawPauseOverlay();
+        }
     }
 
     s_btn3_prev = btn3;
+}
+
+/* =========================================================================
+ * Step 9 — Pause / End Game / Result / Timeout
+ * ========================================================================= */
+
+/**
+ * @brief  Draw the full-screen pause box on LCD4.
+ *
+ *         Layout (spec §2.6 Pause Screen):
+ *           Row 0: TL + 18 dashes + TR
+ *           Row 1: | + 19 spaces + |
+ *           Row 2: | + " >RESUME       END " + |
+ *           Row 3: BL + 18 dashes + BR
+ *
+ *         Cursor position (s_pause_cursor) is reflected on row 2.
+ */
+static void PAUSE_DrawBox(void)
+{
+    uint8_t i;
+
+    /* Row 0: TL + 18 dashes + TR
+     * Custom char slot 0 (TL) has byte value 0x00 which terminates PrintString,
+     * so we use PrintChar for the corner characters. */
+    LCD4_SetCursor(0, 0);
+    LCD4_PrintChar((char)LCD4_CUSTOM_CORNER_TL);
+    for (i = 0; i < 18; i++) LCD4_PrintChar('-');
+    LCD4_PrintChar((char)LCD4_CUSTOM_CORNER_TR);
+
+    /* Row 1: | + 18 spaces + | (inner width = 18) */
+    LCD4_SetCursor(1, 0);
+    LCD4_PrintChar('|');
+    for (i = 0; i < 18; i++) LCD4_PrintChar(' ');
+    LCD4_PrintChar('|');
+
+    /* Row 2: | + 18 inner chars + |
+     * Inner layout (18 chars):
+     *   cursor=RESUME: "  >RESUME      END" — 2 + 7 + 6 + 3 = 18
+     *   cursor=END:    "   RESUME     >END" — 3 + 6 + 5 + 4 = 18
+     */
+    LCD4_SetCursor(2, 0);
+    LCD4_PrintChar('|');
+    if (s_pause_cursor == 0)
+        LCD4_PrintString("  >RESUME      END");
+    else
+        LCD4_PrintString("   RESUME     >END");
+    LCD4_PrintChar('|');
+
+    /* Row 3: BL + 18 dashes + BR */
+    LCD4_SetCursor(3, 0);
+    LCD4_PrintChar((char)LCD4_CUSTOM_CORNER_BL);
+    for (i = 0; i < 18; i++) LCD4_PrintChar('-');
+    LCD4_PrintChar((char)LCD4_CUSTOM_CORNER_BR);
+
+    ULOG_Info("LCD4", "PauseBox", (s_pause_cursor == 0) ? "cursor=RESUME" : "cursor=END");
+}
+
+/**
+ * @brief  Enter PHASE_PAUSED: freeze timers, draw pause box, draw LCD2 overlay.
+ */
+static void PAUSE_Enter(void)
+{
+    s_pause_cursor = 0;   /* Default to RESUME */
+    s_joy_click_last_ms = HAL_GetTick();  /* suppress stale click */
+    s_joy_click_prev    = 1;              /* treat as released on entry */
+    s_timeout_led_phase = 1;             /* start flashing ON immediately */
+    LED_SetPaused();
+    LCD4_Clear();
+    PAUSE_DrawBox();
+    LCD2_DrawPauseOverlay();
+    s_phase = PHASE_PAUSED;
+    ULOG_Info("MAIN", "Pause", "Entered");
+}
+
+/**
+ * @brief  Resume from PHASE_PAUSED: restore LCD4 in-game display and LCD2 content.
+ */
+static void PAUSE_Resume(void)
+{
+    /* Redraw all LCD4 in-game rows */
+    LCD4_Clear();
+    s_lcd4_row0_dirty = 1;
+    s_lcd4_row1_dirty = 1;
+    s_lcd4_row2_dirty = 1;
+    s_last_white_disp_s = UINT32_MAX;
+    s_last_black_disp_s = UINT32_MAX;
+    LCD4_RefreshMoveRow();
+    LCD4_RefreshEvalRow();
+    LCD4_RefreshLabelRow();
+    CLOCK_RefreshDisplay();
+
+    /* Restore LCD2 to its current mode content */
+    LCD2_ExitPause();
+
+    /* Restore normal LED state */
+    s_timeout_led_phase = 0;
+    LED_SetState();
+
+    s_phase = PHASE_RUNNING;
+    ULOG_Info("MAIN", "Pause", "Resumed");
+}
+
+/**
+ * @brief  Poll joystick during PHASE_PAUSED: LEFT/RIGHT moves cursor, click confirms.
+ */
+static void PAUSE_HandleInput(void)
+{
+    JOY_Data joy = JOY_Read();
+    uint32_t now = HAL_GetTick();
+
+    static JOY_Direction s_prev_dir_pause = JOY_CENTRE;
+
+    /* Direction: LEFT/RIGHT toggle the pause cursor (edge-detect) */
+    if (joy.direction != s_prev_dir_pause)
+    {
+        s_prev_dir_pause = joy.direction;
+
+        if (joy.direction == JOY_LEFT && s_pause_cursor != 0)
+        {
+            s_pause_cursor = 0;
+            PAUSE_DrawBox();
+        }
+        else if (joy.direction == JOY_RIGHT && s_pause_cursor != 1)
+        {
+            s_pause_cursor = 1;
+            PAUSE_DrawBox();
+        }
+    }
+
+    /* Click: confirm selection */
+    if (s_joy_click_prev == 1 && joy.click == 0 &&
+        (now - s_joy_click_last_ms) >= JOY_CLICK_DEBOUNCE_MS)
+    {
+        s_joy_click_last_ms = now;
+
+        if (s_pause_cursor == 0)
+        {
+            /* RESUME */
+            PAUSE_Resume();
+        }
+        else
+        {
+            /* END → result selection */
+            s_is_timeout_result = 0;
+            s_result_cursor     = 0;
+            s_joy_click_last_ms = HAL_GetTick();   /* suppress stale click */
+            s_joy_click_prev    = 1;
+            RESULT_SELECT_Draw();
+            s_phase = PHASE_RESULT_SELECT;
+            ULOG_Info("MAIN", "Pause", "End selected -> ResultSelect");
+        }
+    }
+
+    s_joy_click_prev = joy.click;
+
+    /* Button 3 still cycles LCD2 mode; overlay re-applied inside
+     * LCD2_HandleButton3 for modes A and C when s_phase == PHASE_PAUSED. */
+    LCD2_HandleButton3();
+}
+
+/* -------------------------------------------------------------------------
+ * Result selection
+ * ------------------------------------------------------------------------- */
+
+/**
+ * @brief  Draw the result selection screen on LCD4.
+ *
+ *         Row 0: "SELECT RESULT       "
+ *         Row 1: "> White wins        " or "  White wins        "
+ *         Row 2: "> Black wins        " or "  Black wins        "
+ *         Row 3: "> Draw              " or "  Draw              "
+ */
+static void RESULT_SELECT_Draw(void)
+{
+    LCD4_Clear();
+    LCD4_SetCursor(0, 0);
+    LCD4_PrintString("SELECT RESULT       ");
+
+    const char *options[3] = { "White wins", "Black wins", "Draw" };
+    uint8_t i;
+    for (i = 0; i < 3; i++)
+    {
+        char row[21];
+        snprintf(row, sizeof(row), "%s%-18s",
+                 (s_result_cursor == i) ? ">" : " ",
+                 options[i]);
+        LCD4_SetCursor((uint8_t)(1 + i), 0);
+        LCD4_PrintString(row);
+    }
+
+    ULOG_Info("LCD4", "ResultSelect", options[s_result_cursor]);
+}
+
+/**
+ * @brief  Poll joystick during PHASE_RESULT_SELECT.
+ *         UP/DOWN moves cursor; click confirms and advances to RESULT_CONFIRM.
+ */
+static void RESULT_SELECT_HandleInput(void)
+{
+    JOY_Data joy = JOY_Read();
+    uint32_t now = HAL_GetTick();
+    uint8_t  changed = 0;
+
+    /* Edge-detect direction so a held joystick moves the cursor only once */
+    static JOY_Direction s_prev_dir_sel = JOY_CENTRE;
+
+    if (joy.direction != s_prev_dir_sel)
+    {
+        s_prev_dir_sel = joy.direction;
+
+        if (joy.direction == JOY_UP && s_result_cursor > 0)
+        {
+            s_result_cursor--;
+            changed = 1;
+        }
+        else if (joy.direction == JOY_DOWN && s_result_cursor < 2)
+        {
+            s_result_cursor++;
+            changed = 1;
+        }
+    }
+
+    if (changed)
+    {
+        RESULT_SELECT_Draw();
+    }
+
+    /* Click: confirm and go to confirmation screen */
+    if (s_joy_click_prev == 1 && joy.click == 0 &&
+        (now - s_joy_click_last_ms) >= JOY_CLICK_DEBOUNCE_MS)
+    {
+        s_joy_click_last_ms = now;
+        s_prev_dir_sel = JOY_CENTRE;
+
+        s_result = (GameResult)s_result_cursor;   /* 0/1/2 maps directly */
+        s_confirm_cursor = 0;                     /* Default to Yes */
+        RESULT_CONFIRM_Draw();
+        s_phase = PHASE_RESULT_CONFIRM;
+        ULOG_Info("MAIN", "ResultSelect", "Confirmed -> ResultConfirm");
+    }
+
+    s_joy_click_prev = joy.click;
+}
+
+/* -------------------------------------------------------------------------
+ * Result confirmation
+ * ------------------------------------------------------------------------- */
+
+/**
+ * @brief  Draw the result confirmation screen on LCD4.
+ *
+ *         Manual path (spec §2.6 Confirmation screen):
+ *           Row 0: "CONFIRM RESULT      "
+ *           Row 1: result string (20 chars, left-padded)
+ *           Row 2: "FIRSTNAME vs FIRSTNAME" abbreviated to 20 chars
+ *           Row 3: "OK?   Yes      No   " with > cursor
+ *
+ *         Timeout path (spec §2.6 Timeout):
+ *           Row 0: "TIMEOUT             "
+ *           Row 1: "White wins on time  " or "Black wins on time  "
+ *           Row 2: same names row
+ *           Row 3: same Yes/No row
+ */
+static void RESULT_CONFIRM_Draw(void)
+{
+    LCD4_Clear();
+
+    /* Row 0 */
+    LCD4_SetCursor(0, 0);
+    if (s_is_timeout_result)
+        LCD4_PrintString("TIMEOUT             ");
+    else
+        LCD4_PrintString("CONFIRM RESULT      ");
+
+    /* Row 1 — result string */
+    {
+        const char *result_str;
+        switch (s_result)
+        {
+            case RESULT_WHITE_WINS:    result_str = "White wins          "; break;
+            case RESULT_BLACK_WINS:    result_str = "Black wins          "; break;
+            case RESULT_DRAW:          result_str = "Draw                "; break;
+            case RESULT_WHITE_TIMEOUT: result_str = "White wins on time  "; break;
+            case RESULT_BLACK_TIMEOUT: result_str = "Black wins on time  "; break;
+            default:                   result_str = "                    "; break;
+        }
+        LCD4_SetCursor(1, 0);
+        LCD4_PrintString(result_str);
+    }
+
+    /* Row 2 — "FIRSTNAME vs FIRSTNAME" (uses cached names from GAME_Start) */
+    {
+        char row[21];
+        snprintf(row, sizeof(row), "%-8s vs %-8s", s_white_first, s_black_first);
+        LCD4_SetCursor(2, 0);
+        LCD4_PrintString(row);
+    }
+
+    /* Row 3 — Yes/No with cursor
+     * Layout: "OK?   Yes      No   "
+     *          0123456789012345678 9
+     *          "OK?   " = col 0-5
+     *          "Yes"    = col 6-8
+     *          "      " = col 9-14
+     *          "No"     = col 15-16
+     */
+    {
+        char row[21];
+        if (s_confirm_cursor == 0)
+            snprintf(row, sizeof(row), "OK?  >Yes      No   ");
+        else
+            snprintf(row, sizeof(row), "OK?   Yes     >No   ");
+        LCD4_SetCursor(3, 0);
+        LCD4_PrintString(row);
+    }
+
+    ULOG_Info("LCD4", "ResultConfirm",
+              (s_confirm_cursor == 0) ? "cursor=Yes" : "cursor=No");
+}
+
+/**
+ * @brief  Poll joystick during PHASE_RESULT_CONFIRM.
+ *         LEFT/RIGHT toggles Yes/No; click confirms.
+ *         Yes → GAME_Over(); No (manual) → back to RESULT_SELECT;
+ *                             No (timeout) → back to PAUSED.
+ */
+static void RESULT_CONFIRM_HandleInput(void)
+{
+    JOY_Data joy = JOY_Read();
+    uint32_t now = HAL_GetTick();
+    uint8_t  changed = 0;
+
+    static JOY_Direction s_prev_dir_conf = JOY_CENTRE;
+
+    if (joy.direction != s_prev_dir_conf)
+    {
+        s_prev_dir_conf = joy.direction;
+
+        if (joy.direction == JOY_LEFT && s_confirm_cursor != 0)
+        {
+            s_confirm_cursor = 0;
+            changed = 1;
+        }
+        else if (joy.direction == JOY_RIGHT && s_confirm_cursor != 1)
+        {
+            s_confirm_cursor = 1;
+            changed = 1;
+        }
+    }
+
+    if (changed)
+    {
+        RESULT_CONFIRM_Draw();
+    }
+
+    if (s_joy_click_prev == 1 && joy.click == 0 &&
+        (now - s_joy_click_last_ms) >= JOY_CLICK_DEBOUNCE_MS)
+    {
+        s_joy_click_last_ms = now;
+        s_prev_dir_conf = JOY_CENTRE;
+
+        if (s_confirm_cursor == 0)
+        {
+            /* Yes — save and end */
+            GAME_Over();
+        }
+        else
+        {
+            /* No — go back */
+            if (s_is_timeout_result)
+            {
+                /* Spec: "No cancels and returns to PAUSED for flag-fall disputes" */
+                LCD4_Clear();
+                PAUSE_DrawBox();
+                LCD2_DrawPauseOverlay();
+                s_phase = PHASE_PAUSED;
+                ULOG_Info("MAIN", "ResultConfirm", "No (timeout) -> Paused");
+            }
+            else
+            {
+                /* Manual end: go back to result selection */
+                s_result_cursor = (uint8_t)s_result;  /* restore cursor to prior choice */
+                RESULT_SELECT_Draw();
+                s_phase = PHASE_RESULT_SELECT;
+                ULOG_Info("MAIN", "ResultConfirm", "No (manual) -> ResultSelect");
+            }
+        }
+    }
+
+    s_joy_click_prev = joy.click;
+}
+
+/* -------------------------------------------------------------------------
+ * Timeout auto-result
+ * ------------------------------------------------------------------------- */
+
+/**
+ * @brief  Auto-fill result from timeout and jump straight to RESULT_CONFIRM.
+ *         Called by CLOCK_HandleTick when a player's clock hits zero.
+ */
+static void TIMEOUT_Enter(void)
+{
+    /* The active player is the one whose clock was running when it expired */
+    if (s_active == PLAYER_WHITE)
+    {
+        /* White ran out — Black wins */
+        s_result = RESULT_BLACK_TIMEOUT;
+        ULOG_Info("MAIN", "Timeout", "White");
+    }
+    else
+    {
+        /* Black ran out — White wins */
+        s_result = RESULT_WHITE_TIMEOUT;
+        ULOG_Info("MAIN", "Timeout", "Black");
+    }
+
+    s_is_timeout_result = 1;
+    s_confirm_cursor    = 0;   /* Default to Yes */
+    s_joy_click_last_ms = HAL_GetTick();   /* suppress stale click */
+    s_joy_click_prev    = 1;
+    RESULT_CONFIRM_Draw();
+    s_phase = PHASE_RESULT_CONFIRM;
+}
+
+/* -------------------------------------------------------------------------
+ * Game over
+ * ------------------------------------------------------------------------- */
+
+/**
+ * @brief  Transition to PHASE_GAME_OVER: stop everything, draw final screens.
+ *
+ *         LCD2 (spec §2.4 Secondary Display — Game Over State):
+ *           Row 0: "   GAME OVER    "
+ *           Row 1: result string (e.g. " White wins     ")
+ *
+ *         LCD4: clear and show minimal game-over message.
+ *         All LEDs off.
+ */
+static void GAME_Over(void)
+{
+    /* Turn all LEDs off before game-over flash pattern takes over on next tick */
+    HAL_GPIO_WritePin(GPIOB,
+        WHITE_TURN_Pin | WHITE_TIMEOUT_Pin |
+        BLACK_TURN_Pin | BLACK_TIMEOUT_Pin,
+        GPIO_PIN_RESET);
+
+    s_timeout_led_phase = 1;   /* first tick will flash ON */
+
+    /* LCD2 — game over display */
+    LCD2_Clear();
+    LCD2_SetCursor(0, 0);
+    LCD2_PrintString("   GAME OVER    ");
+
+    {
+        const char *result_str;
+        switch (s_result)
+        {
+            case RESULT_WHITE_WINS:
+            case RESULT_WHITE_TIMEOUT: result_str = " White wins     "; break;
+            case RESULT_BLACK_WINS:
+            case RESULT_BLACK_TIMEOUT: result_str = " Black wins     "; break;
+            case RESULT_DRAW:          result_str = "     Draw       "; break;
+            default:                   result_str = "                "; break;
+        }
+        LCD2_SetCursor(1, 0);
+        LCD2_PrintString(result_str);
+    }
+
+    /* LCD4 — clear and show result */
+    LCD4_Clear();
+    LCD4_SetCursor(0, 0);
+    LCD4_PrintString("    GAME OVER       ");
+    LCD4_SetCursor(1, 0);
+    {
+        const char *result_str;
+        switch (s_result)
+        {
+            case RESULT_WHITE_WINS:
+            case RESULT_WHITE_TIMEOUT: result_str = "    White wins      "; break;
+            case RESULT_BLACK_WINS:
+            case RESULT_BLACK_TIMEOUT: result_str = "    Black wins      "; break;
+            case RESULT_DRAW:          result_str = "       Draw         "; break;
+            default:                   result_str = "                    "; break;
+        }
+        LCD4_PrintString(result_str);
+    }
+    LCD4_SetCursor(2, 0);
+    LCD4_PrintString("                    ");
+    LCD4_SetCursor(3, 0);
+    LCD4_PrintString("                    ");
+
+    s_phase = PHASE_GAME_OVER;
+    ULOG_Info("MAIN", "GameOver", "Terminal state entered");
 }
 
 /* USER CODE END 0 */
@@ -964,9 +1742,10 @@ int main(void)
   /* USER CODE BEGIN WHILE */
     while (1)
     {
-        if (s_phase == PHASE_MENU)
+        switch (s_phase)
         {
-            /* --- Menu phase ------------------------------------------------ */
+        /* ------------------------------------------------------------------ */
+        case PHASE_MENU:
             if (s_tick_flag)
                 s_tick_flag = 0;
 
@@ -974,17 +1753,27 @@ int main(void)
             {
                 GAME_Start(MENU_GetSettings());
             }
-        }
-        else
-        {
-            /* --- Running phase --------------------------------------------- */
+            break;
+
+        /* ------------------------------------------------------------------ */
+        case PHASE_RUNNING:
             CLOCK_HandleButtons();
             LCD2_HandleButton3();
+
+            /* CLOCK_HandleButtons may have entered PHASE_PAUSED via joystick click.
+             * If so, skip all LCD4 refresh calls for this iteration — they would
+             * overwrite the pause box that was just drawn. */
+            if (s_phase != PHASE_RUNNING)
+                break;
 
             if (s_tick_flag)
             {
                 CLOCK_HandleTick();
             }
+
+            /* s_phase may have changed to PHASE_RESULT_CONFIRM via timeout */
+            if (s_phase != PHASE_RUNNING)
+                break;
 
             /* LCD4 in-game rows */
             LCD4_RefreshMoveRow();
@@ -994,21 +1783,59 @@ int main(void)
 
             switch (s_lcd2_mode)
             {
-                case LCD2_MODE_A:
-                    LCD2A_Refresh();
-                    break;
-
-                case LCD2_MODE_B:
-                    LCD2B_Refresh();
-                    break;
-
-                case LCD2_MODE_C:
-                    /* No periodic refresh until Step 10 */
-                    break;
-
-                default:
-                    break;
+                case LCD2_MODE_A: LCD2A_Refresh(); break;
+                case LCD2_MODE_B: LCD2B_Refresh(); break;
+                case LCD2_MODE_C: LCD2C_Refresh(); break;
+                default: break;
             }
+            break;
+
+        /* ------------------------------------------------------------------ */
+        case PHASE_PAUSED:
+            /* Consume tick for LED flash only — clock is frozen */
+            if (s_tick_flag)
+            {
+                s_tick_flag = 0;
+                s_timeout_led_phase ^= 1;
+                LED_SetPaused();
+            }
+
+            PAUSE_HandleInput();
+
+            /* Mode B sensor refresh continues during pause */
+            if (s_lcd2_mode == LCD2_MODE_B)
+                LCD2B_Refresh();
+            break;
+
+        /* ------------------------------------------------------------------ */
+        case PHASE_RESULT_SELECT:
+            if (s_tick_flag)
+                s_tick_flag = 0;
+
+            RESULT_SELECT_HandleInput();
+            break;
+
+        /* ------------------------------------------------------------------ */
+        case PHASE_RESULT_CONFIRM:
+            if (s_tick_flag)
+                s_tick_flag = 0;
+
+            RESULT_CONFIRM_HandleInput();
+            break;
+
+        /* ------------------------------------------------------------------ */
+        case PHASE_GAME_OVER:
+            if (s_tick_flag)
+            {
+                s_tick_flag = 0;
+                s_timeout_led_phase ^= 1;
+                LED_SetGameOver();
+            }
+            break;
+
+        /* ------------------------------------------------------------------ */
+        default:
+            break;
         }
 
     /* USER CODE END WHILE */
