@@ -18,6 +18,7 @@
 #include "lcd_4x20.h"
 #include "menu.h"
 #include <stdio.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -25,7 +26,7 @@
 
 typedef enum
 {
-    PHASE_MENU    = 0,   /* Pre-game menu (stages 1–4, and later 5–6)        */
+    PHASE_MENU    = 0,   /* Pre-game menu (stages 1-6)                        */
     PHASE_RUNNING = 1    /* Game active — timers counting, all sensors active */
 } App_Phase;
 
@@ -51,6 +52,17 @@ typedef enum
 #define DHT_POLL_INTERVAL_MS  5000U     /* Sample DHT every 5 seconds             */
 #define MIC_POLL_INTERVAL_MS  1000U     /* Sample microphone every 1 second       */
 
+/* Eval bar geometry */
+#define EVAL_BAR_LEN          12U       /* 12 inner positions between [ ] brackets */
+#define EVAL_BAR_HALF         6U        /* positions 0-5 black, 6-11 white         */
+
+/* Centipawn thresholds — 5 usable cells per side span +-5.0 pawns.
+ * A cell fills as soon as eval crosses into its band (ceiling rule):
+ *   1 cp -> 1 cell,  100 cp -> 2 cells,  200 cp -> 3 cells,
+ *   300 cp -> 4 cells, 400 cp -> 5 cells (max usable, almost full).
+ * Cell 6 (index 0 or 11) is reserved for forced mate only.         */
+#define EVAL_CP_PER_CELL      100       /* cp per bar cell; 5 cells = +-5.0 max */
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -74,17 +86,20 @@ static App_Phase s_phase = PHASE_MENU;
 
 /* --- Clock state --------------------------------------------------------- */
 static volatile uint8_t  s_tick_flag    = 0;          /* Set by TIM2 ISR every 1 s  */
-static          uint32_t s_white_ms     = 0;           /* Initialised from menu settings at game start */
+static          uint32_t s_white_ms     = 0;
 static          uint32_t s_black_ms     = 0;
-static          uint32_t s_increment_ms = 0;           /* Fischer increment per move, from menu        */
+static          uint32_t s_increment_ms = 0;
 static          uint32_t s_last_tick_ms = 0;           /* Captured in ISR             */
 static          ActivePlayer s_active   = PLAYER_WHITE;
 
-/* --- LCD2 mode ----------------------------------------------------------- */
-static LCD2_Mode s_lcd2_mode = LCD2_MODE_A;            /* Default: clock; Button 3 cycles A->B->C->A */
+/* --- Eval visibility (from menu settings) -------------------------------- */
+static uint8_t s_eval_visible = 0;
 
-/* --- LCD4 display gating ------------------------------------------------- */
-static uint32_t s_last_white_disp_s = UINT32_MAX;     /* UINT32_MAX forces first write */
+/* --- LCD2 mode ----------------------------------------------------------- */
+static LCD2_Mode s_lcd2_mode = LCD2_MODE_A;
+
+/* --- LCD4 display gating (times, row 3) ---------------------------------- */
+static uint32_t s_last_white_disp_s = UINT32_MAX;
 static uint32_t s_last_black_disp_s = UINT32_MAX;
 
 /* --- LCD2 Mode A display gating ------------------------------------------ */
@@ -94,14 +109,14 @@ static uint32_t s_last_black_disp_s_lcd2 = UINT32_MAX;
 /* --- Button debounce ----------------------------------------------------- */
 static uint32_t s_btn_white_last_ms = 0;
 static uint32_t s_btn_black_last_ms = 0;
-static uint8_t  s_btn_white_prev    = 1;               /* pull-up: idle = 1           */
+static uint8_t  s_btn_white_prev    = 1;
 static uint8_t  s_btn_black_prev    = 1;
 
 static uint32_t s_btn3_last_ms      = 0;
-static uint8_t  s_btn3_prev         = 1;               /* pull-up: idle = 1           */
+static uint8_t  s_btn3_prev         = 1;
 
 /* --- DHT state ----------------------------------------------------------- */
-static uint32_t s_last_dht_ms  = 0;                   /* Timestamp of last DHT read  */
+static uint32_t s_last_dht_ms  = 0;
 static int8_t   s_last_temp    = -128;                 /* Sentinel: forces first write */
 static int8_t   s_last_hum     = -128;
 
@@ -113,7 +128,79 @@ static uint8_t  s_last_bar_len = 0xFF;                 /* 0xFF forces first writ
 static uint8_t  s_lcd2b_needs_redraw = 0;
 
 /* --- Timeout LED flash phase --------------------------------------------- */
-static uint8_t  s_timeout_led_phase = 0;               /* Flipped every tick; drives timeout LED blink */
+static uint8_t  s_timeout_led_phase = 0;
+
+/* =========================================================================
+ * Mock game data
+ *
+ * Real move notation and eval arrive from the Pi over UART in Step 10.
+ * Until then, these mock arrays cycle on every clock button press so the
+ * LCD4 in-game layout can be exercised and visually verified.
+ * ========================================================================= */
+
+/* Move strings — up to 6 chars + null.  Kept short so they fit cleanly in
+ * the left portion of row 0 (cols 0-5 or so).                               */
+static const char * const k_mock_moves[] =
+{
+    "e4",
+    "e5",
+    "Nf3",
+    "Nc6",
+    "Bb5",
+    "a6",
+    "Ba4",
+    "Nf6",
+    "O-O",
+    "Be7",
+};
+#define MOCK_MOVE_COUNT  (sizeof(k_mock_moves) / sizeof(k_mock_moves[0]))
+
+/* Quality token strings — always printed right-aligned into the last 2 cols
+ * of row 0 (cols 18-19).  One-char tokens are padded with a leading space.  */
+static const char * const k_mock_quality[] =
+{
+    "!!",   /* Best      */
+    " !",   /* Good      */
+    "!?",   /* Interest. */
+    "?!",   /* Inaccurac */
+    " ?",   /* Mistake   */
+    "??",   /* Blunder   */
+    " !",
+    "!!",
+    "?!",
+    " !",
+};
+#define MOCK_QUALITY_COUNT  (sizeof(k_mock_quality) / sizeof(k_mock_quality[0]))
+
+/* Centipawn eval — signed, in units of centipawns.
+ * Positive = white better, negative = black better.
+ * The eval bar maps ±(EVAL_BAR_HALF * EVAL_CP_PER_CELL) = ±600 cp.
+ * Values beyond that saturate the bar (but do NOT fill the extreme cell
+ * unless a forced-mate flag is set — forced mate is out of scope for mock). */
+static const int16_t k_mock_eval_cp[] =
+{
+       0,    /*  0 cells -- equal                   */
+      50,    /*  1 cell  white (+0.5)               */
+    -100,    /*  2 cells black (-1.0, hits boundary)*/
+     150,    /*  2 cells white (+1.5)               */
+    -250,    /*  3 cells black (-2.5)               */
+     300,    /*  4 cells white (+3.0, hits boundary)*/
+    -400,    /*  5 cells black (-4.0, almost full)  */
+     499,    /*  5 cells white (+4.99, almost full) */
+    -500,    /*  5 cells black (-5.0, almost full)  */
+     999,    /*  5 cells white (>>5.0, saturates)   */
+};
+#define MOCK_EVAL_COUNT  (sizeof(k_mock_eval_cp) / sizeof(k_mock_eval_cp[0]))
+
+/* --- Live mock state ----------------------------------------------------- */
+static uint8_t  s_game_started  = 0;    /* 0 until first button press             */
+static uint8_t  s_move_number   = 0;    /* Increments on every button press        */
+static uint8_t  s_mock_idx      = 0;    /* Cycles through mock arrays (mod count)  */
+
+/* Display sentinels for LCD4 rows 0-2 (times handled separately in row 3)   */
+static uint8_t  s_lcd4_row0_dirty = 1;
+static uint8_t  s_lcd4_row1_dirty = 1;
+static uint8_t  s_lcd4_row2_dirty = 1;
 
 /* USER CODE END PV */
 
@@ -135,6 +222,11 @@ static void CLOCK_RefreshDisplay(void);
 static void CLOCK_HandleButtons(void);
 static void CLOCK_HandleTick(void);
 
+static void LCD4_BuildEvalBar(int16_t eval_cp, char *bar_out);
+static void LCD4_RefreshMoveRow(void);
+static void LCD4_RefreshEvalRow(void);
+static void LCD4_RefreshLabelRow(void);
+
 static void LCD2A_DrawStatic(void);
 static void LCD2A_Refresh(void);
 static void LCD2B_DrawStatic(void);
@@ -150,25 +242,38 @@ static void LED_SetState(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-/* Custom character bitmaps */
-static uint8_t bmp_tl[8] = { 0b11111, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b00000 };
-static uint8_t bmp_tr[8] = { 0b11111, 0b00001, 0b00001, 0b00001, 0b00001, 0b00001, 0b00001, 0b00000 };
-static uint8_t bmp_bl[8] = { 0b00000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111 };
-static uint8_t bmp_br[8] = { 0b00000, 0b00001, 0b00001, 0b00001, 0b00001, 0b00001, 0b00001, 0b11111 };
+/* -------------------------------------------------------------------------
+ * Custom character bitmaps
+ *
+ * Slots 0-3: box corners (used by pause screen in Step 9)
+ * Slot 4:    full block  (eval bar — filled cell)
+ * Slot 5:    understroke (eval bar — empty cell)
+ * ------------------------------------------------------------------------- */
+static uint8_t bmp_tl[8]         = { 0b11111, 0b10000, 0b10000, 0b10000,
+                                      0b10000, 0b10000, 0b10000, 0b00000 };
+static uint8_t bmp_tr[8]         = { 0b11111, 0b00001, 0b00001, 0b00001,
+                                      0b00001, 0b00001, 0b00001, 0b00000 };
+static uint8_t bmp_bl[8]         = { 0b00000, 0b10000, 0b10000, 0b10000,
+                                      0b10000, 0b10000, 0b10000, 0b11111 };
+static uint8_t bmp_br[8]         = { 0b00000, 0b00001, 0b00001, 0b00001,
+                                      0b00001, 0b00001, 0b00001, 0b11111 };
+static uint8_t bmp_full_block[8] = { 0b11111, 0b11111, 0b11111, 0b11111,
+                                      0b11111, 0b11111, 0b11111, 0b11111 };
+static uint8_t bmp_understroke[8]= { 0b00000, 0b00000, 0b00000, 0b00000,
+                                      0b00000, 0b00000, 0b00000, 0b11111 };
 
 /**
  * @brief  Transition from PHASE_MENU to PHASE_RUNNING.
- *         Loads confirmed settings into the clock state, draws the LCD4
- *         in-game static rows, enters LCD2 default mode, and sets initial LEDs.
  */
 static void GAME_Start(const MENU_Settings *cfg)
 {
     s_white_ms     = cfg->time_per_side_ms;
     s_black_ms     = cfg->time_per_side_ms;
     s_increment_ms = cfg->increment_ms;
+    s_eval_visible = cfg->eval_visible;
     s_active       = PLAYER_WHITE;
 
-    /* Reset all display sentinels to force a first write */
+    /* Reset clock display sentinels */
     s_last_white_disp_s      = UINT32_MAX;
     s_last_black_disp_s      = UINT32_MAX;
     s_last_white_disp_s_lcd2 = UINT32_MAX;
@@ -178,9 +283,22 @@ static void GAME_Start(const MENU_Settings *cfg)
     s_last_hum                = -128;
     s_timeout_led_phase       = 0;
 
-    /* LCD4 in-game layout — static rows only; CLOCK_RefreshDisplay fills times */
+    /* Reset mock game data */
+    s_game_started  = 0;
+    s_move_number   = 0;
+    s_mock_idx      = 0;
+
+    /* Force all LCD4 content rows to redraw on first loop */
+    s_lcd4_row0_dirty = 1;
+    s_lcd4_row1_dirty = 1;
+    s_lcd4_row2_dirty = 1;
+
+    /* LCD4 in-game layout */
     LCD4_Clear();
     CLOCK_DrawStaticRows();
+    LCD4_RefreshMoveRow();
+    LCD4_RefreshEvalRow();
+    LCD4_RefreshLabelRow();
     CLOCK_RefreshDisplay();
 
     /* LCD2 starts in Mode A (clock) */
@@ -190,7 +308,7 @@ static void GAME_Start(const MENU_Settings *cfg)
 
     s_phase = PHASE_RUNNING;
 
-    char buf[48];
+    char buf[64];
     snprintf(buf, sizeof(buf), "time=%lums inc=%lums eval=%d",
              cfg->time_per_side_ms, cfg->increment_ms,
              (int)cfg->eval_visible);
@@ -198,8 +316,7 @@ static void GAME_Start(const MENU_Settings *cfg)
 }
 
 /**
- * @brief  Format milliseconds as "MM:SS" into buf.
- *         buf must be at least 6 bytes (5 chars + null).
+ * @brief  Format milliseconds as "MM:SS" into buf (at least 6 bytes).
  */
 static void CLOCK_FormatTime(uint32_t ms, char *buf, uint8_t buf_len)
 {
@@ -210,18 +327,232 @@ static void CLOCK_FormatTime(uint32_t ms, char *buf, uint8_t buf_len)
 }
 
 /**
- * @brief  Write static label row to LCD4. Called once at game start.
- *         Row 2: "Black          White"
+ * @brief  Build the 12-character eval bar from a centipawn value.
+ *
+ *         bar_out must be at least 12 bytes (not null-terminated).
+ *
+ *         Bar layout (spec 2.7):
+ *           Positions 0-5  = black's side (left half)
+ *           Positions 6-11 = white's side (right half)
+ *
+ *         Scaling: 5 usable cells per side, each cell = 200 cp band.
+ *         Ceiling rule: any eval > 0 fills at least 1 cell.
+ *           cells_filled = ceil(abs_cp / EVAL_CP_PER_CELL)
+ *                        = (abs_cp + EVAL_CP_PER_CELL - 1) / EVAL_CP_PER_CELL
+ *           Clamped to EVAL_BAR_HALF - 1 (= 5); position 0 / 11 reserved for mate.
+ *
+ *         White advantage: fills rightward from position 6.
+ *         Black advantage: fills leftward from position 5.
+ *         Equal (0 cp):    all 12 positions = understroke.
  */
-static void CLOCK_DrawStaticRows(void)
+static void LCD4_BuildEvalBar(int16_t eval_cp, char *bar_out)
 {
-    LCD4_SetCursor(2, 0);
-    LCD4_PrintString("Black          White");
+    char full  = (char)LCD4_CUSTOM_BLOCK;       /* slot 4 */
+    char under = (char)LCD4_CUSTOM_UNDERSTROKE; /* slot 5 */
+
+    uint8_t i;
+    for (i = 0; i < EVAL_BAR_LEN; i++)
+        bar_out[i] = under;
+
+    if (eval_cp > 0)
+    {
+        /* White advantage — fill rightward from position 6 */
+        int16_t cells = (eval_cp + EVAL_CP_PER_CELL - 1) / EVAL_CP_PER_CELL;  /* ceiling */
+        if (cells > (int16_t)(EVAL_BAR_HALF - 1U))
+            cells = (int16_t)(EVAL_BAR_HALF - 1U);   /* position 11 reserved for mate */
+        for (i = 0; i < (uint8_t)cells; i++)
+            bar_out[EVAL_BAR_HALF + i] = full;
+    }
+    else if (eval_cp < 0)
+    {
+        /* Black advantage — fill leftward from position 5 */
+        int16_t cp_abs = (int16_t)(-eval_cp);
+        int16_t cells  = (cp_abs + EVAL_CP_PER_CELL - 1) / EVAL_CP_PER_CELL;  /* ceiling */
+        if (cells > (int16_t)(EVAL_BAR_HALF - 1U))
+            cells = (int16_t)(EVAL_BAR_HALF - 1U);   /* position 0 reserved for mate */
+        for (i = 0; i < (uint8_t)cells; i++)
+            bar_out[(EVAL_BAR_HALF - 1U) - i] = full;
+    }
+    /* eval_cp == 0: leave all understroke */
 }
 
 /**
- * @brief  Refresh time row on LCD4 when displayed value changes.
- *         Row 3: Black time at col 0, White time at col 15.
+ * @brief  Write row 0 of the in-game LCD4 display.
+ *
+ *         Layout (20 chars):
+ *           - Before first move: 20 spaces.
+ *           - After first move, eval HIDDEN:
+ *               "e4                  "  (move left, rest spaces)
+ *           - After first move, eval VISIBLE:
+ *               "e4               !!"  (move left, quality right-aligned in cols 18-19)
+ *
+ *         Quality token is always exactly 2 chars (padded with a leading
+ *         space for single-char tokens: " !", " ?").
+ */
+static void LCD4_RefreshMoveRow(void)
+{
+    if (!s_lcd4_row0_dirty)
+        return;
+    s_lcd4_row0_dirty = 0;
+
+    char row[21];
+
+    if (!s_game_started)
+    {
+        /* Blank before first move */
+        memset(row, ' ', 20);
+        row[20] = '\0';
+    }
+    else
+    {
+        const char *move    = k_mock_moves   [s_mock_idx % MOCK_MOVE_COUNT];
+        const char *quality = k_mock_quality [s_mock_idx % MOCK_QUALITY_COUNT];
+
+        if (s_eval_visible)
+        {
+            /* Move left-aligned in a 18-char field, quality in cols 18-19 */
+            snprintf(row, sizeof(row), "%-18s%2s", move, quality);
+        }
+        else
+        {
+            /* Move left-aligned, no quality */
+            snprintf(row, sizeof(row), "%-20s", move);
+        }
+    }
+
+    LCD4_SetCursor(0, 0);
+    LCD4_PrintString(row);
+
+    ULOG_Info("LCD4", "MoveRow", row);
+}
+
+/**
+ * @brief  Write row 1 of the in-game LCD4 display (eval bar + numerical eval).
+ *
+ *         Layout (20 chars):
+ *           - eval HIDDEN or before first move: 20 spaces.
+ *           - eval VISIBLE after first move:
+ *               "[____________]  +0.0"   (equal)
+ *               "[_____██████]  +2.0"   (white +200 cp)
+ *               "[██___________]  -1.0"  (black -100 cp)
+ *
+ *         The bracket + 12-char bar + bracket occupies cols 0-13 (14 chars).
+ *         The numerical eval occupies cols 14-19 (6 chars, right-aligned).
+ *         Format: "%+d.%d" — e.g. "+1" for 100 cp becomes "+1.0".
+ *         We store centipawns and display as tenths-of-a-pawn with one decimal.
+ */
+static void LCD4_RefreshEvalRow(void)
+{
+    if (!s_lcd4_row1_dirty)
+        return;
+    s_lcd4_row1_dirty = 0;
+
+    char row[21];
+
+    if (!s_eval_visible || !s_game_started)
+    {
+        memset(row, ' ', 20);
+        row[20] = '\0';
+    }
+    else
+    {
+        int16_t eval_cp = k_mock_eval_cp[s_mock_idx % MOCK_EVAL_COUNT];
+
+        /* Build the 12-char bar */
+        char bar[EVAL_BAR_LEN];
+        LCD4_BuildEvalBar(eval_cp, bar);
+
+        /* Numerical eval: centipawns → ±N.N format (e.g. 130 → "+1.3") */
+        int16_t abs_cp    = (eval_cp < 0) ? (int16_t)(-eval_cp) : eval_cp;
+        int16_t whole     = abs_cp / 100;
+        int16_t tenth     = (abs_cp % 100) / 10;
+        char    sign      = (eval_cp >= 0) ? '+' : '-';
+        char    eval_str[7];                              /* "+99.9\0" = 6+null */
+        snprintf(eval_str, sizeof(eval_str), "%c%d.%d", sign, (int)whole, (int)tenth);
+
+        /* Assemble: "[" + 12 bar chars + "]" + 6-char eval field
+         * Total = 1 + 12 + 1 + 6 = 20 chars.
+         * The bar chars may include custom char bytes (non-ASCII), so we
+         * build the string manually rather than using snprintf for that part.
+         */
+        row[0] = '[';
+        uint8_t i;
+        for (i = 0; i < EVAL_BAR_LEN; i++)
+            row[1U + i] = bar[i];
+        row[13] = ']';
+        /* Right-align eval_str into cols 14-19 (6 chars) */
+        snprintf(&row[14], 7, "%6s", eval_str);
+        row[20] = '\0';
+    }
+
+    LCD4_SetCursor(1, 0);
+    LCD4_PrintString(row);
+
+    ULOG_Info("LCD4", "EvalRow", row);
+}
+
+/**
+ * @brief  Write row 2 of the in-game LCD4 display (labels + move number).
+ *
+ *         Layout (20 chars):
+ *           Before first move: "Black          White"
+ *           After first move:  "Black    #NN   White"
+ *
+ *         "Black" occupies cols 0-4, "White" cols 15-19 (5 chars each).
+ *         The centre 10 chars (cols 5-14) hold the move number when present:
+ *           "#NN" (3 chars) centred → 3 spaces on each side → "   #NN   " (9)
+ *           padded to 10 with one more trailing space.
+ *         For move numbers > 99 the format stays 3 chars ("#NN" mod 100).
+ */
+static void LCD4_RefreshLabelRow(void)
+{
+    if (!s_lcd4_row2_dirty)
+        return;
+    s_lcd4_row2_dirty = 0;
+
+    char row[21];
+
+    if (!s_game_started)
+    {
+        snprintf(row, sizeof(row), "%-20s", "Black          White");
+    }
+    else
+    {
+        /* Centre field: 10 chars wide, "#NN" centred within.
+         * "   #NN   " = 3 spaces + 3 chars + 4 spaces — but that is 10; if
+         * the move number is 1-digit we still use 2 digits (zero-pad): #01.
+         * Move number wraps display at 99 for simplicity; real data from Pi
+         * will replace this in Step 10 anyway.
+         */
+        uint8_t disp_move = (s_move_number > 99) ? 99 : s_move_number;
+        char centre[11];
+        snprintf(centre, sizeof(centre), "   #%02u    ", (unsigned)disp_move);
+        /* "Black" + centre(10) + "White" = 5 + 10 + 5 = 20 */
+        snprintf(row, sizeof(row), "Black%sWhite", centre);
+    }
+
+    LCD4_SetCursor(2, 0);
+    LCD4_PrintString(row);
+
+    ULOG_Info("LCD4", "LabelRow", row);
+}
+
+/**
+ * @brief  Write static rows called once at game start.
+ *         Row 2 is now handled by LCD4_RefreshLabelRow.
+ *         This function is kept for the initial clear + times row structure.
+ *         (Row 3 times are written by CLOCK_RefreshDisplay.)
+ */
+static void CLOCK_DrawStaticRows(void)
+{
+    /* Row 2 will be drawn by LCD4_RefreshLabelRow on first loop;
+     * nothing else static to draw here now that row layout is data-driven. */
+    (void)0;
+}
+
+/**
+ * @brief  Refresh time row (row 3) on LCD4 when displayed value changes.
+ *         Black time at col 0, White time at col 15.
  */
 static void CLOCK_RefreshDisplay(void)
 {
@@ -248,8 +579,8 @@ static void CLOCK_RefreshDisplay(void)
 
 /**
  * @brief  Poll both clock buttons and handle a validated press.
- *         Active-low, pull-up. Valid press = falling edge outside debounce window,
- *         on the active player's button only.
+ *         On a valid press: apply increment, switch active player, advance
+ *         mock game data, and mark LCD4 rows dirty for redraw.
  */
 static void CLOCK_HandleButtons(void)
 {
@@ -268,6 +599,18 @@ static void CLOCK_HandleButtons(void)
             s_white_ms += s_increment_ms;
             s_active = PLAYER_BLACK;
             ULOG_Info("CLOCK", "Btn", "White pressed -> Black active");
+
+            /* Advance mock game data.
+             * White's press ends White's turn and begins a new move pair.
+             * Move number increments here only — both this press and Black's
+             * response will display the same #NN until White presses again. */
+            s_game_started = 1;
+            s_move_number++;
+            s_mock_idx = (uint8_t)((s_mock_idx + 1U) % MOCK_MOVE_COUNT);
+            s_lcd4_row0_dirty = 1;
+            s_lcd4_row1_dirty = 1;
+            s_lcd4_row2_dirty = 1;
+
             LED_SetState();
         }
     }
@@ -283,6 +626,16 @@ static void CLOCK_HandleButtons(void)
             s_black_ms += s_increment_ms;
             s_active = PLAYER_WHITE;
             ULOG_Info("CLOCK", "Btn", "Black pressed -> White active");
+
+            /* Black's press does NOT increment move number — the pair counter
+             * only advances when White presses.  We do advance the mock index
+             * so the displayed move string updates on every half-move.        */
+            s_game_started = 1;
+            s_mock_idx = (uint8_t)((s_mock_idx + 1U) % MOCK_MOVE_COUNT);
+            s_lcd4_row0_dirty = 1;
+            s_lcd4_row1_dirty = 1;
+            s_lcd4_row2_dirty = 1;
+
             LED_SetState();
         }
     }
@@ -291,7 +644,6 @@ static void CLOCK_HandleButtons(void)
 
 /**
  * @brief  Consume the tick flag and decrement the active player's clock by 1 s.
- *         Clamps at 0. Timeout handling deferred to Step 9.
  */
 static void CLOCK_HandleTick(void)
 {
@@ -339,7 +691,6 @@ static void LED_SetState(void)
 
 /**
  * @brief  Write static label row for LCD2 Mode A (Clock).
- *         Row 0: "Black      White"
  */
 static void LCD2A_DrawStatic(void)
 {
@@ -351,7 +702,6 @@ static void LCD2A_DrawStatic(void)
 
 /**
  * @brief  Refresh time row on LCD2 Mode A when displayed value changes.
- *         Row 1: Black time at col 0, White time at col 11.
  */
 static void LCD2A_Refresh(void)
 {
@@ -378,7 +728,6 @@ static void LCD2A_Refresh(void)
 
 /**
  * @brief  Write static content for LCD2 Mode B (Environmental).
- *         Row 1: noise label with blank bar field.
  */
 static void LCD2B_DrawStatic(void)
 {
@@ -515,7 +864,6 @@ static void LCD2_EnterMode(LCD2_Mode mode)
 
 /**
  * @brief  Poll Button 3 (PC4) and cycle LCD2 mode on a validated press.
- *         Only called during PHASE_RUNNING.
  */
 static void LCD2_HandleButton3(void)
 {
@@ -583,10 +931,12 @@ int main(void)
         ULOG_Error("MAIN", "main", "LCD4 init failed");
         Error_Handler();
     }
-    LCD4_DefineCustomChar(LCD4_CUSTOM_CORNER_TL, bmp_tl);
-    LCD4_DefineCustomChar(LCD4_CUSTOM_CORNER_TR, bmp_tr);
-    LCD4_DefineCustomChar(LCD4_CUSTOM_CORNER_BL, bmp_bl);
-    LCD4_DefineCustomChar(LCD4_CUSTOM_CORNER_BR, bmp_br);
+    LCD4_DefineCustomChar(LCD4_CUSTOM_CORNER_TL,  bmp_tl);
+    LCD4_DefineCustomChar(LCD4_CUSTOM_CORNER_TR,  bmp_tr);
+    LCD4_DefineCustomChar(LCD4_CUSTOM_CORNER_BL,  bmp_bl);
+    LCD4_DefineCustomChar(LCD4_CUSTOM_CORNER_BR,  bmp_br);
+    LCD4_DefineCustomChar(LCD4_CUSTOM_BLOCK,       bmp_full_block);
+    LCD4_DefineCustomChar(LCD4_CUSTOM_UNDERSTROKE, bmp_understroke);
     ULOG_Info("MAIN", "main", "LCD4 init OK");
 
     if (LCD2_Init(&hi2c1) != LCD2_OK)
@@ -600,7 +950,7 @@ int main(void)
     JOY_Init(&hadc1, JOYSTICK_CLICK_GPIO_Port, JOYSTICK_CLICK_Pin);
     ULOG_Info("MAIN", "main", "Joystick init OK");
 
-    /* Start TIM2 — 1-second interrupt (runs throughout menu and game) */
+    /* Start TIM2 — 1-second interrupt */
     HAL_TIM_Base_Start_IT(&htim2);
     ULOG_Info("MAIN", "main", "TIM2 started");
 
@@ -617,14 +967,11 @@ int main(void)
         if (s_phase == PHASE_MENU)
         {
             /* --- Menu phase ------------------------------------------------ */
-            /* Consume (and discard) any tick flags that fire during the menu
-             * so the clock doesn't accumulate phantom ticks before game start. */
             if (s_tick_flag)
                 s_tick_flag = 0;
 
             if (MENU_Update())
             {
-                /* Menu complete — transition to RUNNING */
                 GAME_Start(MENU_GetSettings());
             }
         }
@@ -639,6 +986,10 @@ int main(void)
                 CLOCK_HandleTick();
             }
 
+            /* LCD4 in-game rows */
+            LCD4_RefreshMoveRow();
+            LCD4_RefreshEvalRow();
+            LCD4_RefreshLabelRow();
             CLOCK_RefreshDisplay();
 
             switch (s_lcd2_mode)
