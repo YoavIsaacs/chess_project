@@ -1,4 +1,5 @@
-/* menu.c — Pre-game menu: SELECT PRESET, SET TIME, SET INCREMENT, TOGGLE EVAL
+/* menu.c — Pre-game menu: SELECT PRESET, SET TIME, SET INCREMENT, TOGGLE EVAL,
+ *           ENTER PLAYER NAMES, READY
  *
  * Navigation:
  *
@@ -31,9 +32,28 @@
  *   CLICK on HIDDEN  — select HIDDEN (tick moves here), stay
  *   CLICK on VISIBLE — select VISIBLE (tick moves here), stay
  *   CLICK on BACK    — return to SET INCREMENT
- *   CLICK on NEXT    — save eval setting, advance (DONE)
+ *   CLICK on NEXT    — save eval setting, advance (ENTER NAMES)
  *   Tick (*) marks the active selection; > marks the cursor position.
  *   Default selection: HIDDEN.
+ *
+ * Stage 5 (ENTER PLAYER NAMES):
+ *   Four sequential pages: White first, White last, Black first, Black last.
+ *   Each page: text row (row 2) and DONE row (row 3).
+ *   Text row active (s_name_on_done == 0):
+ *     UP/DOWN  — cycle s_name_char (0-25, A-Z); preview letter at cursor position
+ *                blinks at 500 ms half-cycle; each UP/DOWN resets the blink timer
+ *                and forces the letter visible so rapid changes are always seen
+ *     RIGHT    — commit 'A'+s_name_char, advance cursor; no-op if len==12
+ *     CLICK    — same as RIGHT
+ *     LEFT     — backspace (delete last committed char); no-op if len==0
+ *     DOWN     — move to DONE row (only if len > 0)
+ *   DONE row active (s_name_on_done == 1):
+ *     UP       — return to text row
+ *     CLICK    — commit field, advance to next page or READY
+ *     LEFT/RIGHT/DOWN — no-op
+ *
+ * Stage 6 (READY):
+ *   Displays summary. CLICK starts the game (MENU_STAGE_DONE).
  */
 
 #include "../Inc/menu.h"
@@ -106,6 +126,18 @@ typedef enum
 } EvalCursor;
 
 /* -------------------------------------------------------------------------
+ * Stage 5 name-field index
+ * ------------------------------------------------------------------------- */
+typedef enum
+{
+    NAME_WHITE_FIRST = 0,
+    NAME_WHITE_LAST  = 1,
+    NAME_BLACK_FIRST = 2,
+    NAME_BLACK_LAST  = 3,
+    NAME_FIELD_COUNT = 4
+} NameField;
+
+/* -------------------------------------------------------------------------
  * Module state
  * ------------------------------------------------------------------------- */
 static MENU_Stage    s_stage;
@@ -129,15 +161,24 @@ static IncPos  s_inc_pos;
 static EvalCursor s_eval_cursor;
 static uint8_t    s_eval_sel;   /* 0=HIDDEN selected, 1=VISIBLE selected */
 
+/* Stage 5 */
+static uint8_t  s_name_field;       /* NameField index: 0-3                        */
+static char     s_name_buf[MENU_NAME_MAX_LEN + 1U]; /* working buffer, null-terminated */
+static uint8_t  s_name_len;         /* number of committed characters (0-12)       */
+static uint8_t  s_name_char;        /* letter index being previewed (0-25, A-Z)    */
+static uint8_t  s_name_on_done;     /* 0 = cursor on text row, 1 = on DONE row     */
+static uint32_t s_name_blink_ms;    /* timestamp of last blink half-cycle flip      */
+static uint8_t  s_name_blink_vis;   /* 1 = preview letter visible, 0 = blank        */
+
 /* Joystick input — auto-repeat model
  *   On initial press: fire immediately.
  *   If held: fire again after JOY_REPEAT_DELAY_MS, then every JOY_REPEAT_MS.
  *   Click uses a simple debounce (no repeat — one action per physical press).
  *   Direction and click are fully independent.
  */
-#define JOY_REPEAT_DELAY_MS  400U   /* ms before auto-repeat begins          */
-#define JOY_REPEAT_MS        150U   /* ms between repeat firings             */
-#define JOY_CLICK_DEBOUNCE_MS 80U   /* min ms between accepted click events  */
+#define JOY_REPEAT_DELAY_MS   400U   /* ms before auto-repeat begins          */
+#define JOY_REPEAT_MS         150U   /* ms between repeat firings             */
+#define JOY_CLICK_DEBOUNCE_MS  80U   /* min ms between accepted click events  */
 
 static JOY_Direction s_prev_dir;
 static uint32_t      s_dir_press_ms;   /* when current direction was first pressed */
@@ -163,6 +204,14 @@ static void stage3_handle(JOY_Direction dir, uint8_t click);
 
 static void stage4_draw(uint8_t full);
 static void stage4_handle(JOY_Direction dir, uint8_t click);
+
+static void stage5_draw(uint8_t full);
+static void stage5_handle(JOY_Direction dir, uint8_t click);
+static void stage5_blink_tick(void);
+static void stage5_commit_field(void);
+
+static void stage6_draw(void);
+static void stage6_handle(JOY_Direction dir, uint8_t click);
 
 static void     enter_stage(MENU_Stage stage);
 static void     ms_to_mmss(uint32_t ms, uint8_t *mm, uint8_t *ss);
@@ -251,6 +300,8 @@ uint8_t MENU_Update(void)
         case MENU_SET_TIME:      stage2_handle(dir, click); stage2_blink_tick(); break;
         case MENU_SET_INCREMENT: stage3_handle(dir, click);                      break;
         case MENU_TOGGLE_EVAL:   stage4_handle(dir, click);                      break;
+        case MENU_ENTER_NAMES:   stage5_handle(dir, click); stage5_blink_tick(); break;
+        case MENU_READY:         stage6_handle(dir, click);                      break;
         default: break;
     }
 
@@ -300,6 +351,30 @@ static void enter_stage(MENU_Stage stage)
             s_settings.eval_visible = 0;
             stage4_draw(1);
             ULOG_Info("MENU", "Stage", "TOGGLE_EVAL");
+            break;
+
+        case MENU_ENTER_NAMES:
+            /* Zero all name fields in settings before starting entry */
+            memset(s_settings.white_first, 0, sizeof(s_settings.white_first));
+            memset(s_settings.white_last,  0, sizeof(s_settings.white_last));
+            memset(s_settings.black_first, 0, sizeof(s_settings.black_first));
+            memset(s_settings.black_last,  0, sizeof(s_settings.black_last));
+
+            s_name_field     = NAME_WHITE_FIRST;
+            s_name_len       = 0;
+            s_name_char      = 0;
+            s_name_on_done   = 0;
+            s_name_blink_ms  = HAL_GetTick();
+            s_name_blink_vis = 1;
+            memset(s_name_buf, 0, sizeof(s_name_buf));
+
+            stage5_draw(1);
+            ULOG_Info("MENU", "Stage", "ENTER_NAMES");
+            break;
+
+        case MENU_READY:
+            stage6_draw();
+            ULOG_Info("MENU", "Stage", "READY");
             break;
 
         case MENU_STAGE_DONE:
@@ -506,8 +581,8 @@ static void stage2_handle(JOY_Direction dir, uint8_t click)
     /* --- LEFT: move cursor one step left ---------------------------------- */
     if (dir == JOY_LEFT)
     {
-        if      (s_digit_pos == DIGIT_NEXT)   s_digit_pos = DIGIT_BACK;
-        else if (s_digit_pos == DIGIT_BACK)   s_digit_pos = DIGIT_SS_UNITS;
+        if      (s_digit_pos == DIGIT_NEXT)     s_digit_pos = DIGIT_BACK;
+        else if (s_digit_pos == DIGIT_BACK)     s_digit_pos = DIGIT_SS_UNITS;
         else if (s_digit_pos == DIGIT_SS_UNITS) s_digit_pos = DIGIT_SS_TENS;
         else if (s_digit_pos == DIGIT_SS_TENS)  s_digit_pos = DIGIT_MM_UNITS;
         else if (s_digit_pos == DIGIT_MM_UNITS) s_digit_pos = DIGIT_MM_TENS;
@@ -725,7 +800,7 @@ static void stage3_handle(JOY_Direction dir, uint8_t click)
  * CLICK on HIDDEN  → select HIDDEN (tick), stay.
  * CLICK on VISIBLE → select VISIBLE (tick), stay.
  * CLICK on BACK    → return to SET INCREMENT.
- * CLICK on NEXT    → confirm and advance (DONE).
+ * CLICK on NEXT    → confirm and advance (ENTER NAMES).
  * ========================================================================= */
 
 static void stage4_draw(uint8_t full)
@@ -831,7 +906,7 @@ static void stage4_handle(JOY_Direction dir, uint8_t click)
         {
             s_settings.eval_visible = s_eval_sel;
             ULOG_Info("MENU", "Eval", s_eval_sel ? "VISIBLE" : "HIDDEN");
-            enter_stage(MENU_STAGE_DONE);
+            enter_stage(MENU_ENTER_NAMES);
         }
         else
         {
@@ -840,6 +915,325 @@ static void stage4_handle(JOY_Direction dir, uint8_t click)
             ULOG_Info("MENU", "EvalSel", s_eval_sel ? "VISIBLE" : "HIDDEN");
             stage4_draw(0);
         }
+    }
+}
+
+/* =========================================================================
+ * Stage 5 — ENTER PLAYER NAMES
+ *
+ * Four sequential pages (s_name_field 0-3):
+ *   0: White / First
+ *   1: White / Last
+ *   2: Black / First
+ *   3: Black / Last
+ *
+ * Row 0: "ENTER PLAYER NAMES  "
+ * Row 1: "White               "  or  "Black               "
+ * Row 2: "First:JA            "  label (6 chars) + committed chars + blinking preview.
+ *         Preview letter blinks at cursor position; space when blink phase is off.
+ *         When s_name_on_done==1 or field full: no preview — just committed chars.
+ * Row 3: "           DONE     "  (no brackets unless s_name_on_done == 1)
+ *         "          [DONE]    "  (brackets when cursor is on DONE row)
+ *
+ * Field display on row 2: committed chars then blinking preview at s_name_len.
+ * The column after "First:" / "Last: " (col 6) is where the first character sits.
+ * Maximum committed chars: 12. When len==12 the underscore is at col 20 —
+ * one past the display; it is omitted in that case (field is visually full).
+ *
+ * s_name_buf holds the working buffer for the current field.
+ * On DONE click the buffer is copied into the appropriate s_settings field.
+ * ========================================================================= */
+
+static void stage5_draw(uint8_t full)
+{
+    if (full)
+    {
+        LCD4_Clear();
+        LCD4_SetCursor(0, 0);
+        LCD4_PrintString("ENTER PLAYER NAMES  ");
+    }
+
+    /* Row 1 — player label */
+    LCD4_SetCursor(1, 0);
+    if (s_name_field == NAME_WHITE_FIRST || s_name_field == NAME_WHITE_LAST)
+        LCD4_PrintString("White               ");
+    else
+        LCD4_PrintString("Black               ");
+
+    /* Row 2 — field label + committed chars + blinking preview
+     *
+     * Layout: "First:" / "Last: " (6 chars) + 14 display chars = 20 total.
+     * MENU_NAME_MAX_LEN is 12 (committed chars max); the extra 2 cols are used
+     * for the blinking preview letter and a trailing space, giving the user
+     * visible feedback without consuming a committed slot.
+     * When field is full (len==12) or on DONE row: 12 committed + 2 spaces.
+     */
+    {
+        char row2[21];
+        const char *label = ((s_name_field == NAME_WHITE_FIRST) ||
+                             (s_name_field == NAME_BLACK_FIRST))
+                            ? "First:" : "Last: ";
+
+        /* Build the 14-char display portion.
+         * Positions 0..len-1  : committed characters
+         * Position  len        : blinking preview letter (or space when blink-off)
+         *                        — only when on text row and len < 12
+         * Position  len+1      : space separator after preview (when len < 11)
+         * Remainder            : spaces
+         * When on DONE row or len==12: all positions from len onward are spaces.
+         */
+        char name_part[15];   /* 14 display chars + null */
+        uint8_t i;
+        for (i = 0; i < s_name_len; i++)
+            name_part[i] = s_name_buf[i];
+
+        if (s_name_on_done == 0 && s_name_len < MENU_NAME_MAX_LEN)
+        {
+            /* Blinking preview letter at cursor position */
+            name_part[s_name_len] = s_name_blink_vis
+                                    ? (char)('A' + s_name_char)
+                                    : ' ';
+            /* Pad remainder with spaces */
+            for (i = s_name_len + 1U; i < 14U; i++)
+                name_part[i] = ' ';
+        }
+        else
+        {
+            /* DONE row active or field full — no preview */
+            for (i = s_name_len; i < 14U; i++)
+                name_part[i] = ' ';
+        }
+        name_part[14] = '\0';
+
+        /* "First:" / "Last: " (6) + name_part (14) = 20 chars exactly */
+        snprintf(row2, sizeof(row2), "%s%s", label, name_part);
+        LCD4_SetCursor(2, 0);
+        LCD4_PrintString(row2);
+    }
+
+    /* Row 3 — DONE, with brackets only when cursor is on it */
+    LCD4_SetCursor(3, 0);
+    if (s_name_on_done)
+        LCD4_PrintString("          [DONE]    ");
+    else
+        LCD4_PrintString("           DONE     ");
+}
+
+/* Copy the working buffer into the correct s_settings field and advance. */
+static void stage5_commit_field(void)
+{
+    s_name_buf[s_name_len] = '\0';   /* ensure null-terminated */
+
+    char log_buf[24];
+
+    switch (s_name_field)
+    {
+        case NAME_WHITE_FIRST:
+            memcpy(s_settings.white_first, s_name_buf, s_name_len + 1U);
+            snprintf(log_buf, sizeof(log_buf), "white_first=%s", s_settings.white_first);
+            break;
+        case NAME_WHITE_LAST:
+            memcpy(s_settings.white_last, s_name_buf, s_name_len + 1U);
+            snprintf(log_buf, sizeof(log_buf), "white_last=%s", s_settings.white_last);
+            break;
+        case NAME_BLACK_FIRST:
+            memcpy(s_settings.black_first, s_name_buf, s_name_len + 1U);
+            snprintf(log_buf, sizeof(log_buf), "black_first=%s", s_settings.black_first);
+            break;
+        case NAME_BLACK_LAST:
+        default:
+            memcpy(s_settings.black_last, s_name_buf, s_name_len + 1U);
+            snprintf(log_buf, sizeof(log_buf), "black_last=%s", s_settings.black_last);
+            break;
+    }
+
+    ULOG_Info("MENU", "Name", log_buf);
+
+    s_name_field++;
+
+    if (s_name_field >= NAME_FIELD_COUNT)
+    {
+        enter_stage(MENU_READY);
+    }
+    else
+    {
+        /* Reset working state for the next field */
+        s_name_len       = 0;
+        s_name_char      = 0;
+        s_name_on_done   = 0;
+        s_name_blink_ms  = HAL_GetTick();
+        s_name_blink_vis = 1;
+        memset(s_name_buf, 0, sizeof(s_name_buf));
+        stage5_draw(1);
+    }
+}
+
+/* Blink the preview letter at the cursor position.
+ * Called every loop iteration while in MENU_ENTER_NAMES.
+ * Does nothing when s_name_on_done == 1 or field is full.
+ */
+static void stage5_blink_tick(void)
+{
+    if (s_name_on_done || s_name_len >= MENU_NAME_MAX_LEN)
+        return;
+
+    uint32_t now = HAL_GetTick();
+    if ((now - s_name_blink_ms) < BLINK_HALF_MS)
+        return;
+
+    s_name_blink_ms  = now;
+    s_name_blink_vis ^= 1;
+
+    /* Rewrite only the cursor character in place — no full redraw */
+    uint8_t col = (uint8_t)(6U + s_name_len);   /* "First:" / "Last: " = 6 chars */
+    LCD4_SetCursor(2, col);
+    if (s_name_blink_vis)
+    {
+        char ch[2] = { (char)('A' + s_name_char), '\0' };
+        LCD4_PrintString(ch);
+    }
+    else
+    {
+        LCD4_PrintString(" ");
+    }
+}
+
+static void stage5_handle(JOY_Direction dir, uint8_t click)
+{
+    if (s_name_on_done)
+    {
+        /* --- Cursor is on the DONE row ------------------------------------ */
+        if (dir == JOY_UP)
+        {
+            s_name_on_done   = 0;
+            /* Restart blink immediately so the preview appears at once */
+            s_name_blink_ms  = HAL_GetTick();
+            s_name_blink_vis = 1;
+            stage5_draw(0);
+        }
+        else if (click)
+        {
+            stage5_commit_field();
+        }
+        /* LEFT / RIGHT / DOWN on DONE row: no-op */
+        return;
+    }
+
+    /* --- Cursor is on the text row ---------------------------------------- */
+
+    if (dir == JOY_UP)
+    {
+        /* Cycle character forward A→B→...→Z→A; reset blink so change is visible */
+        s_name_char      = (uint8_t)((s_name_char + 1U) % 26U);
+        s_name_blink_ms  = HAL_GetTick();
+        s_name_blink_vis = 1;
+        /* Rewrite cursor character in place */
+        uint8_t col = (uint8_t)(6U + s_name_len);
+        LCD4_SetCursor(2, col);
+        char ch[2] = { (char)('A' + s_name_char), '\0' };
+        LCD4_PrintString(ch);
+        return;
+    }
+
+    if (dir == JOY_DOWN)
+    {
+        if (s_name_len > 0)
+        {
+            /* Move to DONE row — blink stops naturally (s_name_on_done guards tick) */
+            s_name_on_done = 1;
+            stage5_draw(0);
+        }
+        /* If len == 0: no-op — cannot go to DONE with empty field */
+        return;
+    }
+
+    if (dir == JOY_LEFT)
+    {
+        /* Backspace: delete last committed character */
+        if (s_name_len > 0)
+        {
+            s_name_len--;
+            s_name_buf[s_name_len] = '\0';
+            s_name_char      = 0;
+            s_name_blink_ms  = HAL_GetTick();
+            s_name_blink_vis = 1;
+            stage5_draw(0);
+        }
+        /* len == 0: no-op */
+        return;
+    }
+
+    if (dir == JOY_RIGHT || click)
+    {
+        /* Commit current character and advance cursor */
+        if (s_name_len < MENU_NAME_MAX_LEN)
+        {
+            s_name_buf[s_name_len] = (char)('A' + s_name_char);
+            s_name_len++;
+            s_name_buf[s_name_len] = '\0';
+            s_name_char      = 0;
+            s_name_blink_ms  = HAL_GetTick();
+            s_name_blink_vis = 1;
+            stage5_draw(0);
+        }
+        /* len == 12: no-op — field is full */
+        return;
+    }
+}
+
+/* =========================================================================
+ * Stage 6 — READY
+ *
+ * Row 0: "READY               "
+ * Row 1: "White: JOHN SMITH   "   (first + space + last, max 13 chars after label)
+ * Row 2: "Black: JANE DOE     "
+ * Row 3: "Click to start      "
+ *
+ * No navigation — a single joystick click fires MENU_STAGE_DONE.
+ * ========================================================================= */
+
+static void stage6_draw(void)
+{
+    LCD4_Clear();
+    LCD4_SetCursor(0, 0);
+    LCD4_PrintString("READY               ");
+
+    /* Row 1 — White name
+     * "White: " = 7 chars; remaining 13 chars for name.
+     * Concatenate first + " " + last, truncate at 13 chars.
+     */
+    {
+        char name[14];   /* 13 chars + null */
+        snprintf(name, sizeof(name), "%s %s",
+                 s_settings.white_first, s_settings.white_last);
+        char row[21];
+        snprintf(row, sizeof(row), "White: %-13s", name);
+        LCD4_SetCursor(1, 0);
+        LCD4_PrintString(row);
+    }
+
+    /* Row 2 — Black name */
+    {
+        char name[14];
+        snprintf(name, sizeof(name), "%s %s",
+                 s_settings.black_first, s_settings.black_last);
+        char row[21];
+        snprintf(row, sizeof(row), "Black: %-13s", name);
+        LCD4_SetCursor(2, 0);
+        LCD4_PrintString(row);
+    }
+
+    LCD4_SetCursor(3, 0);
+    LCD4_PrintString("Click to start      ");
+}
+
+static void stage6_handle(JOY_Direction dir, uint8_t click)
+{
+    (void)dir;   /* no directional navigation on the READY page */
+
+    if (click)
+    {
+        enter_stage(MENU_STAGE_DONE);
     }
 }
 
