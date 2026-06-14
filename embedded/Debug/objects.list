@@ -3,6 +3,7 @@
 "./Core/Src/lcd_2x16.o"
 "./Core/Src/lcd_4x20.o"
 "./Core/Src/main.o"
+"./Core/Src/menu.o"
 "./Core/Src/stm32f4xx_hal_msp.o"
 "./Core/Src/stm32f4xx_it.o"
 "./Core/Src/syscalls.o"

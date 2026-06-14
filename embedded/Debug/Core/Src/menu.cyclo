@@ -1,0 +1,16 @@
+../Core/Src/menu.c:175:6:MENU_Init	1
+../Core/Src/menu.c:186:9:MENU_Update	15
+../Core/Src/menu.c:260:22:MENU_GetSettings	1
+../Core/Src/menu.c:269:13:enter_stage	6
+../Core/Src/menu.c:330:13:stage1_draw	3
+../Core/Src/menu.c:349:13:stage1_handle	6
+../Core/Src/menu.c:398:13:stage2_draw	6
+../Core/Src/menu.c:426:13:stage2_blink_tick	8
+../Core/Src/menu.c:463:13:stage2_increment_active_digit	13
+../Core/Src/menu.c:504:13:stage2_handle	36
+../Core/Src/menu.c:625:13:stage3_draw	6
+../Core/Src/menu.c:653:13:stage3_handle	11
+../Core/Src/menu.c:731:13:stage4_draw	10
+../Core/Src/menu.c:766:13:stage4_handle	16
+../Core/Src/menu.c:850:13:ms_to_mmss	2
+../Core/Src/menu.c:858:17:mmss_to_ms	1

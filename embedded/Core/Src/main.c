@@ -16,11 +16,18 @@
 #include "joystick.h"
 #include "lcd_2x16.h"
 #include "lcd_4x20.h"
+#include "menu.h"
 #include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+
+typedef enum
+{
+    PHASE_MENU    = 0,   /* Pre-game menu (stages 1–4, and later 5–6)        */
+    PHASE_RUNNING = 1    /* Game active — timers counting, all sensors active */
+} App_Phase;
 
 typedef enum
 {
@@ -30,8 +37,8 @@ typedef enum
 
 typedef enum
 {
-    LCD2_MODE_A = 0,   /* Clock display       */
-    LCD2_MODE_B = 1,   /* Environmental       */
+    LCD2_MODE_A = 0,   /* Clock display        */
+    LCD2_MODE_B = 1,   /* Environmental        */
     LCD2_MODE_C = 2    /* Opponent view (TODO) */
 } LCD2_Mode;
 
@@ -40,10 +47,9 @@ typedef enum
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define CLOCK_START_MS        180000UL  /* Hard-coded start time: 3:00 (Blitz)  */
 #define BTN_DEBOUNCE_MS       50U       /* Ignore button edges within this window */
-#define DHT_POLL_INTERVAL_MS  5000U     /* Sample DHT every 5 seconds            */
-#define MIC_POLL_INTERVAL_MS  1000U     /* Sample microphone every 1 second      */
+#define DHT_POLL_INTERVAL_MS  5000U     /* Sample DHT every 5 seconds             */
+#define MIC_POLL_INTERVAL_MS  1000U     /* Sample microphone every 1 second       */
 
 /* USER CODE END PD */
 
@@ -63,44 +69,51 @@ UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 
+/* --- Application phase --------------------------------------------------- */
+static App_Phase s_phase = PHASE_MENU;
+
 /* --- Clock state --------------------------------------------------------- */
-static volatile uint8_t  s_tick_flag    = 0;              /* Set by TIM2 ISR every 1 s  */
-static          uint32_t s_white_ms     = CLOCK_START_MS;
-static          uint32_t s_black_ms     = CLOCK_START_MS;
-static          uint32_t s_last_tick_ms = 0;              /* Captured in ISR             */
+static volatile uint8_t  s_tick_flag    = 0;          /* Set by TIM2 ISR every 1 s  */
+static          uint32_t s_white_ms     = 0;           /* Initialised from menu settings at game start */
+static          uint32_t s_black_ms     = 0;
+static          uint32_t s_increment_ms = 0;           /* Fischer increment per move, from menu        */
+static          uint32_t s_last_tick_ms = 0;           /* Captured in ISR             */
 static          ActivePlayer s_active   = PLAYER_WHITE;
 
 /* --- LCD2 mode ----------------------------------------------------------- */
-static LCD2_Mode s_lcd2_mode = LCD2_MODE_A;               /* Default: clock; Button 3 cycles A->B->C->A */
+static LCD2_Mode s_lcd2_mode = LCD2_MODE_A;            /* Default: clock; Button 3 cycles A->B->C->A */
 
 /* --- LCD4 display gating ------------------------------------------------- */
-static uint32_t s_last_white_disp_s = UINT32_MAX;         /* UINT32_MAX forces first write */
+static uint32_t s_last_white_disp_s = UINT32_MAX;     /* UINT32_MAX forces first write */
 static uint32_t s_last_black_disp_s = UINT32_MAX;
 
 /* --- LCD2 Mode A display gating ------------------------------------------ */
-static uint32_t s_last_white_disp_s_lcd2 = UINT32_MAX;   /* UINT32_MAX forces first write */
+static uint32_t s_last_white_disp_s_lcd2 = UINT32_MAX;
 static uint32_t s_last_black_disp_s_lcd2 = UINT32_MAX;
 
 /* --- Button debounce ----------------------------------------------------- */
 static uint32_t s_btn_white_last_ms = 0;
 static uint32_t s_btn_black_last_ms = 0;
-static uint8_t  s_btn_white_prev    = 1;                  /* pull-up: idle = 1           */
+static uint8_t  s_btn_white_prev    = 1;               /* pull-up: idle = 1           */
 static uint8_t  s_btn_black_prev    = 1;
 
 static uint32_t s_btn3_last_ms      = 0;
-static uint8_t  s_btn3_prev         = 1;                  /* pull-up: idle = 1           */
+static uint8_t  s_btn3_prev         = 1;               /* pull-up: idle = 1           */
 
 /* --- DHT state ----------------------------------------------------------- */
-static uint32_t s_last_dht_ms  = 0;                       /* Timestamp of last DHT read  */
-static int8_t   s_last_temp    = -128;                    /* Sentinel: forces first write */
+static uint32_t s_last_dht_ms  = 0;                   /* Timestamp of last DHT read  */
+static int8_t   s_last_temp    = -128;                 /* Sentinel: forces first write */
 static int8_t   s_last_hum     = -128;
 
 /* --- Microphone state ---------------------------------------------------- */
 static uint32_t s_last_mic_ms  = 0;
-static uint8_t  s_last_bar_len = 0xFF;                    /* 0xFF forces first write      */
+static uint8_t  s_last_bar_len = 0xFF;                 /* 0xFF forces first write      */
 
 /* --- LCD2 Mode B forced redraw ------------------------------------------- */
-static uint8_t  s_lcd2b_needs_redraw = 0;                 /* Set on mode entry; clears after one write */
+static uint8_t  s_lcd2b_needs_redraw = 0;
+
+/* --- Timeout LED flash phase --------------------------------------------- */
+static uint8_t  s_timeout_led_phase = 0;               /* Flipped every tick; drives timeout LED blink */
 
 /* USER CODE END PV */
 
@@ -113,6 +126,8 @@ static void MX_I2C1_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
+
+static void GAME_Start(const MENU_Settings *cfg);
 
 static void CLOCK_FormatTime(uint32_t ms, char *buf, uint8_t buf_len);
 static void CLOCK_DrawStaticRows(void);
@@ -128,20 +143,62 @@ static void LCD2C_DrawStatic(void);
 static void LCD2_EnterMode(LCD2_Mode mode);
 static void LCD2_HandleButton3(void);
 
+static void LED_SetState(void);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-/* Custom character bitmaps (carried over — needed for LCD4_DefineCustomChar) */
+/* Custom character bitmaps */
 static uint8_t bmp_tl[8] = { 0b11111, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b00000 };
 static uint8_t bmp_tr[8] = { 0b11111, 0b00001, 0b00001, 0b00001, 0b00001, 0b00001, 0b00001, 0b00000 };
 static uint8_t bmp_bl[8] = { 0b00000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111 };
 static uint8_t bmp_br[8] = { 0b00000, 0b00001, 0b00001, 0b00001, 0b00001, 0b00001, 0b00001, 0b11111 };
 
 /**
+ * @brief  Transition from PHASE_MENU to PHASE_RUNNING.
+ *         Loads confirmed settings into the clock state, draws the LCD4
+ *         in-game static rows, enters LCD2 default mode, and sets initial LEDs.
+ */
+static void GAME_Start(const MENU_Settings *cfg)
+{
+    s_white_ms     = cfg->time_per_side_ms;
+    s_black_ms     = cfg->time_per_side_ms;
+    s_increment_ms = cfg->increment_ms;
+    s_active       = PLAYER_WHITE;
+
+    /* Reset all display sentinels to force a first write */
+    s_last_white_disp_s      = UINT32_MAX;
+    s_last_black_disp_s      = UINT32_MAX;
+    s_last_white_disp_s_lcd2 = UINT32_MAX;
+    s_last_black_disp_s_lcd2 = UINT32_MAX;
+    s_last_bar_len            = 0xFF;
+    s_last_temp               = -128;
+    s_last_hum                = -128;
+    s_timeout_led_phase       = 0;
+
+    /* LCD4 in-game layout — static rows only; CLOCK_RefreshDisplay fills times */
+    LCD4_Clear();
+    CLOCK_DrawStaticRows();
+    CLOCK_RefreshDisplay();
+
+    /* LCD2 starts in Mode A (clock) */
+    LCD2_EnterMode(LCD2_MODE_A);
+
+    LED_SetState();
+
+    s_phase = PHASE_RUNNING;
+
+    char buf[48];
+    snprintf(buf, sizeof(buf), "time=%lums inc=%lums eval=%d",
+             cfg->time_per_side_ms, cfg->increment_ms,
+             (int)cfg->eval_visible);
+    ULOG_Info("MAIN", "GameStart", buf);
+}
+
+/**
  * @brief  Format milliseconds as "MM:SS" into buf.
- * @note   Truncates to whole seconds — fractional ms discarded for display.
  *         buf must be at least 6 bytes (5 chars + null).
  */
 static void CLOCK_FormatTime(uint32_t ms, char *buf, uint8_t buf_len)
@@ -153,26 +210,18 @@ static void CLOCK_FormatTime(uint32_t ms, char *buf, uint8_t buf_len)
 }
 
 /**
- * @brief  Write static label row to LCD4 only. Called once at startup.
- *
- *         LCD4 row 2 (20 chars): "Black          White"
- *
- * @note   LCD2 static content is owned by LCD2x_DrawStatic() per mode.
- *         This function does not touch LCD2.
+ * @brief  Write static label row to LCD4. Called once at game start.
+ *         Row 2: "Black          White"
  */
 static void CLOCK_DrawStaticRows(void)
 {
-    /* LCD4 — "Black"(5) + 10 spaces + "White"(5) = 20 chars */
     LCD4_SetCursor(2, 0);
     LCD4_PrintString("Black          White");
 }
 
 /**
- * @brief  Refresh time row on LCD4 only when displayed value changes.
- *
- *         LCD4 row 3: Black time at col 0, White time at col 15.
- *
- * @note   LCD2 Mode A clock refresh is handled separately by LCD2A_Refresh().
+ * @brief  Refresh time row on LCD4 when displayed value changes.
+ *         Row 3: Black time at col 0, White time at col 15.
  */
 static void CLOCK_RefreshDisplay(void)
 {
@@ -180,7 +229,6 @@ static void CLOCK_RefreshDisplay(void)
     uint32_t white_s = s_white_ms / 1000UL;
     uint32_t black_s = s_black_ms / 1000UL;
 
-    /* --- LCD4 row 3 -------------------------------------------------- */
     if (black_s != s_last_black_disp_s)
     {
         CLOCK_FormatTime(s_black_ms, buf, sizeof(buf));
@@ -200,12 +248,8 @@ static void CLOCK_RefreshDisplay(void)
 
 /**
  * @brief  Poll both clock buttons and handle a validated press.
- *
- *         Active-low, pull-up. Valid press = falling edge (prev=1, now=0)
- *         outside the debounce window, on the active player's button only.
- *
- *         On valid press: switch s_active. The ms counters are not touched —
- *         all time deduction is handled exclusively by CLOCK_HandleTick.
+ *         Active-low, pull-up. Valid press = falling edge outside debounce window,
+ *         on the active player's button only.
  */
 static void CLOCK_HandleButtons(void)
 {
@@ -214,7 +258,6 @@ static void CLOCK_HandleButtons(void)
     uint8_t btn_white = HAL_GPIO_ReadPin(WHITE_CLOCK_GPIO_Port, WHITE_CLOCK_Pin);
     uint8_t btn_black = HAL_GPIO_ReadPin(BLACK_CLOCK_GPIO_Port, BLACK_CLOCK_Pin);
 
-    /* White button — falling edge, debounced, active player only */
     if (s_btn_white_prev == 1 && btn_white == 0 &&
         (now - s_btn_white_last_ms) >= BTN_DEBOUNCE_MS)
     {
@@ -222,13 +265,14 @@ static void CLOCK_HandleButtons(void)
 
         if (s_active == PLAYER_WHITE)
         {
+            s_white_ms += s_increment_ms;
             s_active = PLAYER_BLACK;
             ULOG_Info("CLOCK", "Btn", "White pressed -> Black active");
+            LED_SetState();
         }
     }
     s_btn_white_prev = btn_white;
 
-    /* Black button — falling edge, debounced, active player only */
     if (s_btn_black_prev == 1 && btn_black == 0 &&
         (now - s_btn_black_last_ms) >= BTN_DEBOUNCE_MS)
     {
@@ -236,8 +280,10 @@ static void CLOCK_HandleButtons(void)
 
         if (s_active == PLAYER_BLACK)
         {
+            s_black_ms += s_increment_ms;
             s_active = PLAYER_WHITE;
             ULOG_Info("CLOCK", "Btn", "Black pressed -> White active");
+            LED_SetState();
         }
     }
     s_btn_black_prev = btn_black;
@@ -245,7 +291,7 @@ static void CLOCK_HandleButtons(void)
 
 /**
  * @brief  Consume the tick flag and decrement the active player's clock by 1 s.
- *         Clamps at 0 — timeout handling deferred to Step 9.
+ *         Clamps at 0. Timeout handling deferred to Step 9.
  */
 static void CLOCK_HandleTick(void)
 {
@@ -265,17 +311,35 @@ static void CLOCK_HandleTick(void)
         else
             s_black_ms = 0;
     }
+
+    s_timeout_led_phase ^= 1;
+    LED_SetState();
+}
+
+/**
+ * @brief  Drive all four LEDs to match the current clock state.
+ */
+static void LED_SetState(void)
+{
+    uint8_t white_timeout = (s_white_ms == 0) ? 1 : 0;
+    uint8_t black_timeout = (s_black_ms == 0) ? 1 : 0;
+
+    HAL_GPIO_WritePin(GPIOB, WHITE_TIMEOUT_Pin,
+        (white_timeout && s_timeout_led_phase) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOB, BLACK_TIMEOUT_Pin,
+        (black_timeout && s_timeout_led_phase) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+
+    HAL_GPIO_WritePin(GPIOB, WHITE_TURN_Pin,
+        (s_active == PLAYER_WHITE && !white_timeout) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOB, BLACK_TURN_Pin,
+        (s_active == PLAYER_BLACK && !black_timeout) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+
+    ULOG_Info("LED", "Set", (s_active == PLAYER_WHITE) ? "White turn" : "Black turn");
 }
 
 /**
  * @brief  Write static label row for LCD2 Mode A (Clock).
- *
- *         Row 0 (16 chars): "Black      White"
- *           Black at col 0 (5 chars), 6 spaces, White at col 11 (5 chars)
- *         Row 1: time values written immediately by LCD2A_Refresh() via
- *         sentinel reset — no static text here.
- *
- *         Call once on entry to Mode A.
+ *         Row 0: "Black      White"
  */
 static void LCD2A_DrawStatic(void)
 {
@@ -287,13 +351,7 @@ static void LCD2A_DrawStatic(void)
 
 /**
  * @brief  Refresh time row on LCD2 Mode A when displayed value changes.
- *
  *         Row 1: Black time at col 0, White time at col 11.
- *         Format: "MM:SS" (5 chars each).
- *
- *         Gated by s_last_white_disp_s_lcd2 / s_last_black_disp_s_lcd2.
- *         Both sentinels are reset to UINT32_MAX by LCD2_EnterMode() so
- *         the first call always writes.
  */
 static void LCD2A_Refresh(void)
 {
@@ -320,12 +378,7 @@ static void LCD2A_Refresh(void)
 
 /**
  * @brief  Write static content for LCD2 Mode B (Environmental).
- *
- *         Row 1 — noise label with blank bar field.
- *         LCD2B_Refresh() fills row 0 (DHT) and bar on first poll
- *         (forced by sentinel resets in LCD2_EnterMode).
- *
- *         Call once on entry to Mode B.
+ *         Row 1: noise label with blank bar field.
  */
 static void LCD2B_DrawStatic(void)
 {
@@ -337,14 +390,6 @@ static void LCD2B_DrawStatic(void)
 
 /**
  * @brief  Poll DHT and microphone; refresh LCD2 Mode B rows when values change.
- *
- *         DHT cadence:  DHT_POLL_INTERVAL_MS (5 s)
- *         Mic cadence:  MIC_POLL_INTERVAL_MS (1 s)
- *
- *         DHT — row 0 format (16 chars): "T:%2dC  H:%2d%%    "
- *         Mic  — row 1 format (16 chars): "Noise: " + 9-char bar
- *                Bar: bar_len copies of 0xFF (full block), rest spaces.
- *                Scale: bar_len = (adc_val * 9) / 4095
  */
 static void LCD2B_Refresh(void)
 {
@@ -353,7 +398,6 @@ static void LCD2B_Refresh(void)
     /* --- DHT read (5 s cadence) ---------------------------------------- */
     if (s_lcd2b_needs_redraw || (now - s_last_dht_ms) >= DHT_POLL_INTERVAL_MS)
     {
-        /* Only hit the sensor on a real cadence tick, not a forced redraw */
         if ((now - s_last_dht_ms) >= DHT_POLL_INTERVAL_MS)
         {
             s_last_dht_ms = now;
@@ -371,7 +415,6 @@ static void LCD2B_Refresh(void)
             s_last_hum  = (int8_t)d.humidity_pct;
         }
 
-        /* Write cached (or freshly read) values — always runs on forced redraw */
         if (s_last_temp != -128 && s_last_hum != -128)
         {
             char buf[17];
@@ -384,7 +427,7 @@ static void LCD2B_Refresh(void)
         s_lcd2b_needs_redraw = 0;
     }
 
-    /* --- Microphone ADC read (1 s cadence, inline, ADC1 channel 15) ----- */
+    /* --- Microphone ADC read (1 s cadence) ------------------------------ */
     if ((now - s_last_mic_ms) >= MIC_POLL_INTERVAL_MS)
     {
         s_last_mic_ms = now;
@@ -423,15 +466,7 @@ static void LCD2B_Refresh(void)
 }
 
 /**
- * @brief  Write static placeholder for LCD2 Mode C (Opponent view).
- *
- *         Until Step 10 provides real move/eval data from the Pi,
- *         both rows show a TODO placeholder.
- *
- *         Row 0: "MODE C          " (16 chars)
- *         Row 1: "TODO            " (16 chars)
- *
- *         Call once on entry to Mode C. No Refresh function needed until Step 10.
+ * @brief  Write static placeholder for LCD2 Mode C (Opponent view, TODO until Step 10).
  */
 static void LCD2C_DrawStatic(void)
 {
@@ -445,13 +480,6 @@ static void LCD2C_DrawStatic(void)
 
 /**
  * @brief  Transition LCD2 to the given mode.
- *
- *         Resets all relevant display sentinels so the new mode's
- *         Refresh function writes immediately on its first call.
- *         Calls the appropriate DrawStatic to lay down fixed content,
- *         then calls Refresh once for modes that have live data (A, B).
- *
- * @param  mode  Target LCD2 mode (LCD2_MODE_A, _B, or _C).
  */
 static void LCD2_EnterMode(LCD2_Mode mode)
 {
@@ -460,7 +488,6 @@ static void LCD2_EnterMode(LCD2_Mode mode)
     switch (mode)
     {
         case LCD2_MODE_A:
-            /* Reset LCD2 Mode A gating sentinels */
             s_last_white_disp_s_lcd2 = UINT32_MAX;
             s_last_black_disp_s_lcd2 = UINT32_MAX;
             LCD2A_DrawStatic();
@@ -469,11 +496,6 @@ static void LCD2_EnterMode(LCD2_Mode mode)
             break;
 
         case LCD2_MODE_B:
-            /* Reset mic sentinel so bar is redrawn immediately on entry.
-             * DHT sentinels are intentionally NOT reset — if valid temp/hum
-             * data is cached from a prior read, LCD2B_Refresh() will detect
-             * a value change (new display vs blank screen) and write it
-             * immediately without waiting for the next 5 s poll. */
             s_last_bar_len       = 0xFF;
             s_lcd2b_needs_redraw = 1;
             LCD2B_DrawStatic();
@@ -493,11 +515,7 @@ static void LCD2_EnterMode(LCD2_Mode mode)
 
 /**
  * @brief  Poll Button 3 (PC4) and cycle LCD2 mode on a validated press.
- *
- *         Active-low, pull-up. Valid press = falling edge (prev=1, now=0)
- *         outside the 50 ms debounce window.
- *
- *         Cycle: A -> B -> C -> A -> ...
+ *         Only called during PHASE_RUNNING.
  */
 static void LCD2_HandleButton3(void)
 {
@@ -536,21 +554,16 @@ int main(void)
   /* USER CODE BEGIN 1 */
   /* USER CODE END 1 */
 
-  /* MCU Configuration--------------------------------------------------------*/
-
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
 
   /* USER CODE BEGIN Init */
   /* USER CODE END Init */
 
-  /* Configure the system clock */
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
   /* USER CODE END SysInit */
 
-  /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_ADC1_Init();
@@ -587,17 +600,13 @@ int main(void)
     JOY_Init(&hadc1, JOYSTICK_CLICK_GPIO_Port, JOYSTICK_CLICK_Pin);
     ULOG_Info("MAIN", "main", "Joystick init OK");
 
-    /* Enter the default LCD2 mode — draws static content and forces first refresh */
-    LCD2_EnterMode(s_lcd2_mode);
-
-    /* Draw static labels on LCD4, then initial times */
-    LCD4_Clear();
-    CLOCK_DrawStaticRows();
-    CLOCK_RefreshDisplay();
-
-    /* Start TIM2 — 1-second interrupt */
+    /* Start TIM2 — 1-second interrupt (runs throughout menu and game) */
     HAL_TIM_Base_Start_IT(&htim2);
-    ULOG_Info("MAIN", "main", "TIM2 started -- entering loop");
+    ULOG_Info("MAIN", "main", "TIM2 started");
+
+    /* Initialise the pre-game menu — draws Stage 1 on LCD4 */
+    MENU_Init();
+    ULOG_Info("MAIN", "main", "Menu init OK -- entering loop");
 
   /* USER CODE END 2 */
 
@@ -605,32 +614,50 @@ int main(void)
   /* USER CODE BEGIN WHILE */
     while (1)
     {
-        CLOCK_HandleButtons();
-        LCD2_HandleButton3();
-
-        if (s_tick_flag)
+        if (s_phase == PHASE_MENU)
         {
-            CLOCK_HandleTick();
+            /* --- Menu phase ------------------------------------------------ */
+            /* Consume (and discard) any tick flags that fire during the menu
+             * so the clock doesn't accumulate phantom ticks before game start. */
+            if (s_tick_flag)
+                s_tick_flag = 0;
+
+            if (MENU_Update())
+            {
+                /* Menu complete — transition to RUNNING */
+                GAME_Start(MENU_GetSettings());
+            }
         }
-
-        CLOCK_RefreshDisplay();
-
-        switch (s_lcd2_mode)
+        else
         {
-            case LCD2_MODE_A:
-                LCD2A_Refresh();
-                break;
+            /* --- Running phase --------------------------------------------- */
+            CLOCK_HandleButtons();
+            LCD2_HandleButton3();
 
-            case LCD2_MODE_B:
-                LCD2B_Refresh();
-                break;
+            if (s_tick_flag)
+            {
+                CLOCK_HandleTick();
+            }
 
-            case LCD2_MODE_C:
-                /* No periodic refresh until Step 10 */
-                break;
+            CLOCK_RefreshDisplay();
 
-            default:
-                break;
+            switch (s_lcd2_mode)
+            {
+                case LCD2_MODE_A:
+                    LCD2A_Refresh();
+                    break;
+
+                case LCD2_MODE_B:
+                    LCD2B_Refresh();
+                    break;
+
+                case LCD2_MODE_C:
+                    /* No periodic refresh until Step 10 */
+                    break;
+
+                default:
+                    break;
+            }
         }
 
     /* USER CODE END WHILE */
@@ -649,14 +676,9 @@ void SystemClock_Config(void)
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-  /** Configure the main internal regulator output voltage
-  */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
 
-  /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -672,8 +694,6 @@ void SystemClock_Config(void)
     Error_Handler();
   }
 
-  /** Initializes the CPU, AHB and APB buses clocks
-  */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
@@ -689,24 +709,11 @@ void SystemClock_Config(void)
 
 /**
   * @brief ADC1 Initialization Function
-  * @param None
-  * @retval None
   */
 static void MX_ADC1_Init(void)
 {
-
-  /* USER CODE BEGIN ADC1_Init 0 */
-
-  /* USER CODE END ADC1_Init 0 */
-
   ADC_ChannelConfTypeDef sConfig = {0};
 
-  /* USER CODE BEGIN ADC1_Init 1 */
-
-  /* USER CODE END ADC1_Init 1 */
-
-  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
-  */
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV2;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
@@ -724,8 +731,6 @@ static void MX_ADC1_Init(void)
     Error_Handler();
   }
 
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
   sConfig.Channel = ADC_CHANNEL_0;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
@@ -733,27 +738,13 @@ static void MX_ADC1_Init(void)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN ADC1_Init 2 */
-
-  /* USER CODE END ADC1_Init 2 */
-
 }
 
 /**
   * @brief I2C1 Initialization Function
-  * @param None
-  * @retval None
   */
 static void MX_I2C1_Init(void)
 {
-
-  /* USER CODE BEGIN I2C1_Init 0 */
-
-  /* USER CODE END I2C1_Init 0 */
-
-  /* USER CODE BEGIN I2C1_Init 1 */
-
-  /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
   hi2c1.Init.ClockSpeed = 100000;
   hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
@@ -767,30 +758,16 @@ static void MX_I2C1_Init(void)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN I2C1_Init 2 */
-
-  /* USER CODE END I2C1_Init 2 */
-
 }
 
 /**
   * @brief TIM2 Initialization Function
-  * @param None
-  * @retval None
   */
 static void MX_TIM2_Init(void)
 {
-
-  /* USER CODE BEGIN TIM2_Init 0 */
-
-  /* USER CODE END TIM2_Init 0 */
-
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
 
-  /* USER CODE BEGIN TIM2_Init 1 */
-
-  /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 49999;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
@@ -812,27 +789,13 @@ static void MX_TIM2_Init(void)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN TIM2_Init 2 */
-
-  /* USER CODE END TIM2_Init 2 */
-
 }
 
 /**
   * @brief USART2 Initialization Function
-  * @param None
-  * @retval None
   */
 static void MX_USART2_UART_Init(void)
 {
-
-  /* USER CODE BEGIN USART2_Init 0 */
-
-  /* USER CODE END USART2_Init 0 */
-
-  /* USER CODE BEGIN USART2_Init 1 */
-
-  /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
   huart2.Init.BaudRate = 115200;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
@@ -845,10 +808,6 @@ static void MX_USART2_UART_Init(void)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN USART2_Init 2 */
-
-  /* USER CODE END USART2_Init 2 */
-
 }
 
 /**
@@ -856,83 +815,61 @@ static void MX_USART2_UART_Init(void)
   */
 static void MX_DMA_Init(void)
 {
-
-  /* DMA controller clock enable */
   __HAL_RCC_DMA2_CLK_ENABLE();
 
-  /* DMA interrupt init */
-  /* DMA2_Stream0_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
-
 }
 
 /**
   * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
   */
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-/* USER CODE BEGIN MX_GPIO_Init_1 */
-/* USER CODE END MX_GPIO_Init_1 */
 
-  /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
-  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, BLACK_TURN_Pin|BLACK_TIMEOUT_Pin|WHITE_TIMEOUT_Pin|WHITE_TURN_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(DHT11_GPIO_Port, DHT11_Pin, GPIO_PIN_SET);
 
-  /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : JOYSTICK_CLICK_Pin WHITE_CLOCK_Pin BLACK_CLOCK_Pin */
   GPIO_InitStruct.Pin = JOYSTICK_CLICK_Pin|WHITE_CLOCK_Pin|BLACK_CLOCK_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : LD2_Pin */
   GPIO_InitStruct.Pin = LD2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : LCD_MODE_SWITCH_Pin */
   GPIO_InitStruct.Pin = LCD_MODE_SWITCH_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(LCD_MODE_SWITCH_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : DHT11_Pin */
-  GPIO_InitStruct.Pin = DHT11_Pin;
+  GPIO_InitStruct.Pin = BLACK_TURN_Pin|BLACK_TIMEOUT_Pin|WHITE_TIMEOUT_Pin|WHITE_TURN_Pin
+                          |DHT11_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(DHT11_GPIO_Port, &GPIO_InitStruct);
-
-/* USER CODE BEGIN MX_GPIO_Init_2 */
-/* USER CODE END MX_GPIO_Init_2 */
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 }
 
 /* USER CODE BEGIN 4 */
 
 /**
  * @brief  TIM2 period elapsed callback — fires every 1 second.
- * @note   Sets s_tick_flag and captures timestamp here in ISR context
- *         so s_last_tick_ms is always the exact hardware event time,
- *         not the main-loop poll time.
  */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
@@ -947,12 +884,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
 /**
   * @brief  This function is executed in case of error occurrence.
-  * @retval None
   */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1)
   {
@@ -961,18 +896,9 @@ void Error_Handler(void)
 }
 
 #ifdef  USE_FULL_ASSERT
-/**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */

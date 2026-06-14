@@ -79,6 +79,14 @@ void Error_Handler(void);
 #define LCD_MODE_SWITCH_GPIO_Port GPIOC
 #define MIC_INPUT_Pin GPIO_PIN_5
 #define MIC_INPUT_GPIO_Port GPIOC
+#define BLACK_TURN_Pin GPIO_PIN_0
+#define BLACK_TURN_GPIO_Port GPIOB
+#define BLACK_TIMEOUT_Pin GPIO_PIN_1
+#define BLACK_TIMEOUT_GPIO_Port GPIOB
+#define WHITE_TIMEOUT_Pin GPIO_PIN_2
+#define WHITE_TIMEOUT_GPIO_Port GPIOB
+#define WHITE_TURN_Pin GPIO_PIN_10
+#define WHITE_TURN_GPIO_Port GPIOB
 #define DHT11_Pin GPIO_PIN_12
 #define DHT11_GPIO_Port GPIOB
 #define TMS_Pin GPIO_PIN_13
