@@ -3264,11 +3264,11 @@ static void LED_SetGameOver(void)
  80018e4:	080018f9 	.word	0x080018f9
  80018e8:	0800192d 	.word	0x0800192d
  80018ec:	08001961 	.word	0x08001961
- 80018f0:	080018f9 	.word	0x080018f9
- 80018f4:	0800192d 	.word	0x0800192d
+ 80018f0:	0800192d 	.word	0x0800192d
+ 80018f4:	080018f9 	.word	0x080018f9
     {
         case RESULT_WHITE_WINS:
-        case RESULT_WHITE_TIMEOUT:
+        case RESULT_BLACK_TIMEOUT:
             HAL_GPIO_WritePin(GPIOB, WHITE_TURN_Pin,    on);
  80018f8:	79fb      	ldrb	r3, [r7, #7]
  80018fa:	461a      	mov	r2, r3
@@ -3297,7 +3297,7 @@ static void LED_SetGameOver(void)
  800192a:	e033      	b.n	8001994 <LED_SetGameOver+0xd8>
 
         case RESULT_BLACK_WINS:
-        case RESULT_BLACK_TIMEOUT:
+        case RESULT_WHITE_TIMEOUT:
             HAL_GPIO_WritePin(GPIOB, WHITE_TURN_Pin,    off);
  800192c:	79bb      	ldrb	r3, [r7, #6]
  800192e:	461a      	mov	r2, r3

@@ -838,7 +838,7 @@ static void LED_SetGameOver(void)
     switch (s_result)
     {
         case RESULT_WHITE_WINS:
-        case RESULT_WHITE_TIMEOUT:
+        case RESULT_BLACK_TIMEOUT:
             HAL_GPIO_WritePin(GPIOB, WHITE_TURN_Pin,    on);
             HAL_GPIO_WritePin(GPIOB, WHITE_TIMEOUT_Pin, on);
             HAL_GPIO_WritePin(GPIOB, BLACK_TURN_Pin,    off);
@@ -846,7 +846,7 @@ static void LED_SetGameOver(void)
             break;
 
         case RESULT_BLACK_WINS:
-        case RESULT_BLACK_TIMEOUT:
+        case RESULT_WHITE_TIMEOUT:
             HAL_GPIO_WritePin(GPIOB, WHITE_TURN_Pin,    off);
             HAL_GPIO_WritePin(GPIOB, WHITE_TIMEOUT_Pin, off);
             HAL_GPIO_WritePin(GPIOB, BLACK_TURN_Pin,    on);
