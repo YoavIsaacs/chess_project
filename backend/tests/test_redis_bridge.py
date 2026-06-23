@@ -29,12 +29,15 @@ def make_eval_message(data: dict) -> dict:
 
 def make_pubsub_mock(*messages):
     """
-    Return a mock pubsub that yields the given messages from listen(),
-    then sets game_state.active = False so the bridge loop exits cleanly.
+    Return a mock pubsub whose listen() yields the given messages then exits.
 
-    pubsub.listen must be a plain callable returning an async generator.
-    If it were an AsyncMock, calling pubsub.listen() would return a coroutine,
-    not an async generator, and 'async for' in redis_bridge would fail silently.
+    CRITICAL: pubsub.listen must be a plain def (not async def) that returns
+    an async generator. If it were an AsyncMock, calling pubsub.listen() would
+    return a coroutine object — not an async generator — and 'async for' in
+    redis_bridge would iterate zero items silently.
+
+    The sentinel at the end sets game_state.active = False so the bridge's
+    inner loop condition fires and breaks cleanly before the next poll cycle.
     """
     pubsub = AsyncMock()
     pubsub.subscribe = AsyncMock()
@@ -45,9 +48,14 @@ def make_pubsub_mock(*messages):
         for msg in messages:
             yield msg
         game_state.active = False
+        # One more yield so the loop condition is evaluated after active=False
         yield {"type": "message", "data": json.dumps({"_sentinel": True}).encode()}
 
-    pubsub.listen = _gen
+    # Plain def — returns the async generator when called, not a coroutine
+    def _listen():
+        return _gen()
+
+    pubsub.listen = _listen
     return pubsub
 
 
@@ -70,7 +78,7 @@ async def run_bridge_with_messages(messages, writer=None, redis_url="redis://loc
 
     with patch("redis.asyncio.from_url", return_value=redis_client_mock):
         task = asyncio.create_task(redis_bridge.run(writer_ref, redis_url))
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.5)
         task.cancel()
         try:
             await task
@@ -178,7 +186,7 @@ class TestSubscribeChannel:
 
         with patch("redis.asyncio.from_url", return_value=redis_client_mock):
             task = asyncio.create_task(redis_bridge.run(writer_ref, "redis://localhost"))
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.5)
             task.cancel()
             try:
                 await task
@@ -199,7 +207,7 @@ class TestGameLifecycle:
 
         with patch("redis.asyncio.from_url") as mock_from_url:
             task = asyncio.create_task(redis_bridge.run(writer_ref, "redis://localhost"))
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.1)
             task.cancel()
             try:
                 await task
@@ -217,7 +225,7 @@ class TestGameLifecycle:
 
         with patch("redis.asyncio.from_url") as mock_from_url:
             task = asyncio.create_task(redis_bridge.run(writer_ref, "redis://localhost"))
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.1)
             task.cancel()
             try:
                 await task
@@ -246,7 +254,7 @@ class TestGameLifecycle:
 
         with patch("redis.asyncio.from_url", return_value=redis_client_mock):
             task = asyncio.create_task(redis_bridge.run(writer_ref, "redis://localhost"))
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.5)
             task.cancel()
             try:
                 await task
