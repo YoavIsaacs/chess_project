@@ -13,15 +13,25 @@ import uart_handler.serial_reader as serial_reader
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+async def _stall():
+    """Awaitable that blocks until the enclosing task is cancelled."""
+    await asyncio.Event().wait()
+
+
 def make_serial_mock(*lines: str):
     """
     Return (reader_mock, writer_mock) where reader yields the given lines
-    then blocks forever (simulating a quiet serial port).
+    then stalls until the task is cancelled.
     Lines should be raw bytes including \\n.
+
+    The sentinel must be an awaitable coroutine, not a bare asyncio.Future.
+    A bare Future is returned directly by readline() and .decode() crashes on it.
+    _stall() is a coroutine: readline() awaits it and blocks cleanly until
+    the task receives CancelledError.
     """
     reader = AsyncMock()
     responses = [line.encode("ascii") for line in lines]
-    responses.append(asyncio.Future())  # never resolves → stalls the loop
+    responses.append(_stall())  # stalls until task is cancelled
 
     reader.readline = AsyncMock(side_effect=responses)
 

@@ -31,19 +31,23 @@ def make_pubsub_mock(*messages):
     """
     Return a mock pubsub that yields the given messages from listen(),
     then sets game_state.active = False so the bridge loop exits cleanly.
+
+    pubsub.listen must be a plain callable returning an async generator.
+    If it were an AsyncMock, calling pubsub.listen() would return a coroutine,
+    not an async generator, and 'async for' in redis_bridge would fail silently.
     """
     pubsub = AsyncMock()
     pubsub.subscribe = AsyncMock()
     pubsub.unsubscribe = AsyncMock()
 
-    async def listen_gen():
+    async def _gen():
         yield {"type": "subscribe", "data": 1}
         for msg in messages:
             yield msg
         game_state.active = False
         yield {"type": "message", "data": json.dumps({"_sentinel": True}).encode()}
 
-    pubsub.listen = listen_gen
+    pubsub.listen = _gen
     return pubsub
 
 
