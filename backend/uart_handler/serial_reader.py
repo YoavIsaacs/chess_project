@@ -8,10 +8,10 @@ import uuid
 
 import serial_asyncio
 
-import game_state
-import publisher
-from config import SERIAL_PORT, SERIAL_BAUD
-from parser import parse_line
+from . import game_state
+from . import publisher
+from .config import SERIAL_PORT, SERIAL_BAUD
+from .parser import parse_line
 
 log = logging.getLogger(__name__)
 

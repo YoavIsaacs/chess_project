@@ -7,8 +7,8 @@ import logging
 
 import redis.asyncio as aioredis
 
-import game_state
-from config import CHANNEL_EVAL_TEMPLATE
+from . import game_state
+from .config import CHANNEL_EVAL_TEMPLATE
 
 log = logging.getLogger(__name__)
 
