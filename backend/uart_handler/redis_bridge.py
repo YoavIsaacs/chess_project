@@ -29,7 +29,7 @@ async def run(writer_ref: list, redis_url: str) -> None:
             continue
 
         # Wait for an active game
-        if game_state.game_id is None:
+        if game_state.game_id is None or not game_state.active:
             await asyncio.sleep(_POLL_INTERVAL)
             continue
 
@@ -44,9 +44,9 @@ async def run(writer_ref: list, redis_url: str) -> None:
 
         try:
             async for message in pubsub.listen():
-                # Stop if game changed or ended and a new game started
-                if game_state.game_id != current_game_id:
-                    log.info("game_id changed — resubscribing")
+                # Stop if game ended or a new game started
+                if not game_state.active or game_state.game_id != current_game_id:
+                    log.info("Game ended or game_id changed — unsubscribing")
                     break
 
                 if message["type"] != "message":
