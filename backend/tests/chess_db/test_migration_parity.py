@@ -12,6 +12,7 @@ running the migration's own downgrade().
 from __future__ import annotations
 
 import os
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -70,22 +71,26 @@ def _drop_everything_sync(connection) -> None:
     connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
 
 
-async def test_migration_matches_models(alembic_cfg):
-    # Build schema via the real migration. command.upgrade is sync; env.py
-    # drives its own asyncio.run(...) internally, same as a normal `alembic
-    # upgrade head` invocation from the shell.
+def test_migration_matches_models(alembic_cfg):
+    # Plain `def`, not `async def`: command.upgrade() drives env.py's own
+    # internal asyncio.run() call, which conflicts with the event loop
+    # pytest-asyncio's auto mode would otherwise have us running inside.
     command.upgrade(alembic_cfg, "head")
 
-    engine = create_async_engine(_test_url(), poolclass=NullPool)
-    try:
-        async with engine.connect() as conn:
-            diff = await conn.run_sync(
-                lambda sync_conn: compare_metadata(
-                    MigrationContext.configure(sync_conn), Base.metadata
+    async def _diff_against_models():
+        engine = create_async_engine(_test_url(), poolclass=NullPool)
+        try:
+            async with engine.connect() as conn:
+                diff = await conn.run_sync(
+                    lambda sync_conn: compare_metadata(
+                        MigrationContext.configure(sync_conn), Base.metadata
+                    )
                 )
-            )
-        assert diff == [], f"Migration drift detected: {diff}"
-    finally:
-        async with engine.begin() as conn:
-            await conn.run_sync(_drop_everything_sync)
-        await engine.dispose()
+            return diff
+        finally:
+            async with engine.begin() as conn:
+                await conn.run_sync(_drop_everything_sync)
+            await engine.dispose()
+
+    diff = asyncio.run(_diff_against_models())
+    assert diff == [], f"Migration drift detected: {diff}"

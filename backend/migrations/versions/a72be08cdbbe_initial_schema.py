@@ -9,6 +9,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+import chess_db.types
 
 
 # revision identifiers, used by Alembic.
@@ -31,7 +32,7 @@ def upgrade() -> None:
     sa.Column('eval_visible', sa.Boolean(), nullable=False),
     sa.Column('is_live', sa.Boolean(), server_default=sa.text('true'), nullable=False),
     sa.Column('result', sa.Enum('white_wins', 'black_wins', 'draw', 'timeout_white', 'timeout_black', 'incomplete', name='game_result'), server_default=sa.text("'incomplete'"), nullable=False),
-    sa.Column('started_at', sa.TIMESTAMP(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('started_at', sa.TIMESTAMP(), server_default=sa.text('current_timestamp()'), nullable=False),
     sa.Column('ended_at', sa.TIMESTAMP(), nullable=True),
     sa.PrimaryKeyConstraint('game_id')
     )
@@ -50,7 +51,7 @@ def upgrade() -> None:
     sa.Column('noise_level', sa.Integer(), nullable=True),
     sa.Column('temperature_c', sa.Float(), nullable=True),
     sa.Column('humidity_pct', sa.Float(), nullable=True),
-    sa.Column('recorded_at', sa.TIMESTAMP(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('recorded_at', sa.TIMESTAMP(), server_default=sa.text('current_timestamp()'), nullable=False),
     sa.ForeignKeyConstraint(['game_id'], ['games.game_id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('move_id')
     )

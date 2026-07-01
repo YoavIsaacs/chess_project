@@ -4,7 +4,7 @@
 import json
 import logging
 
-from config import (
+from .config import (
     CHANNEL_GAME_EVENTS,
     CHANNEL_GAME_EVENTS_TEMPLATE,
 )

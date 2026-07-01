@@ -9,9 +9,9 @@ import sys
 
 import redis.asyncio as aioredis
 
-from config import REDIS_URL
-import serial_reader
-import redis_bridge
+from .config import REDIS_URL
+from . import serial_reader
+from . import redis_bridge
 
 logging.basicConfig(
     level=logging.INFO,
