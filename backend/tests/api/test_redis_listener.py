@@ -1,5 +1,6 @@
 """redis_listener tests. get_session and repository calls are monkeypatched;
 no real Redis or MySQL connection is ever opened."""
+import asyncio
 import json
 import uuid
 from contextlib import asynccontextmanager
@@ -280,7 +281,7 @@ async def test_handle_event_swallows_handler_errors(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# run() — subscribe / listen / cleanup
+# _run_once() — subscribe / listen / cleanup for a single connection
 # ---------------------------------------------------------------------------
 
 
@@ -329,7 +330,7 @@ class FakeRedisClient:
         pass
 
 
-async def test_run_processes_messages_and_cleans_up(monkeypatch):
+async def test_run_once_processes_messages_and_cleans_up(monkeypatch):
     game_id = str(uuid.uuid4())
     messages = [
         {
@@ -363,7 +364,7 @@ async def test_run_processes_messages_and_cleans_up(monkeypatch):
     monkeypatch.setattr(redis_listener, "_handle_event", fake_handle_event)
 
     manager = RecordingManager()
-    await redis_listener.run(manager, redis_url="redis://fake")
+    await redis_listener._run_once(manager, "redis://fake")
 
     assert len(handled) == 1
     assert handled[0]["game_id"] == game_id
@@ -373,7 +374,7 @@ async def test_run_processes_messages_and_cleans_up(monkeypatch):
     assert fake_pubsub.punsubscribed == ["game:*:events"]
 
 
-async def test_run_skips_malformed_json(monkeypatch):
+async def test_run_once_skips_malformed_json(monkeypatch):
     messages = [{"type": "message", "channel": b"game_events", "data": "not-json"}]
     fake_pubsub = _make_fake_pubsub(messages)
     fake_client = FakeRedisClient(fake_pubsub)
@@ -387,6 +388,103 @@ async def test_run_skips_malformed_json(monkeypatch):
     monkeypatch.setattr(redis_listener, "_handle_event", fake_handle_event)
 
     manager = RecordingManager()
-    await redis_listener.run(manager, redis_url="redis://fake")
+    await redis_listener._run_once(manager, "redis://fake")
 
     assert handled == []
+
+
+# ---------------------------------------------------------------------------
+# run() — reconnect loop with backoff, wrapping _run_once()
+# ---------------------------------------------------------------------------
+
+
+async def test_run_propagates_cancellation_without_retry(monkeypatch):
+    async def fake_run_once(manager, redis_url):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(redis_listener, "_run_once", fake_run_once)
+    manager = RecordingManager()
+
+    with pytest.raises(asyncio.CancelledError):
+        await redis_listener.run(manager, redis_url="redis://fake")
+
+
+async def test_run_retries_after_connection_error(monkeypatch):
+    calls = []
+    sleeps = []
+
+    async def fake_run_once(manager, redis_url):
+        calls.append(1)
+        if len(calls) == 1:
+            raise ConnectionError("redis down")
+        # Stop the loop once the "reconnect" happens, via cancellation —
+        # the same way main.py's lifespan actually stops this task.
+        raise asyncio.CancelledError()
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(redis_listener, "_run_once", fake_run_once)
+    monkeypatch.setattr(redis_listener.asyncio, "sleep", fake_sleep)
+
+    manager = RecordingManager()
+    with pytest.raises(asyncio.CancelledError):
+        await redis_listener.run(manager, redis_url="redis://fake")
+
+    assert len(calls) == 2
+    assert sleeps == [redis_listener._INITIAL_BACKOFF_S]
+
+
+async def test_run_backoff_grows_and_caps(monkeypatch):
+    calls = []
+    sleeps = []
+
+    async def fake_run_once(manager, redis_url):
+        calls.append(1)
+        if len(calls) <= 3:
+            raise ConnectionError("still down")
+        raise asyncio.CancelledError()
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(redis_listener, "_run_once", fake_run_once)
+    monkeypatch.setattr(redis_listener.asyncio, "sleep", fake_sleep)
+
+    manager = RecordingManager()
+    with pytest.raises(asyncio.CancelledError):
+        await redis_listener.run(manager, redis_url="redis://fake")
+
+    assert sleeps == [1.0, 2.0, 4.0]
+
+
+async def test_run_resets_backoff_after_clean_reconnect(monkeypatch):
+    calls = []
+    sleeps = []
+
+    async def fake_run_once(manager, redis_url):
+        calls.append(1)
+        n = len(calls)
+        if n == 1:
+            raise ConnectionError("down")
+        if n == 2:
+            return  # clean return -- e.g. listen() generator ended without error
+        if n == 3:
+            raise ConnectionError("down again")
+        raise asyncio.CancelledError()
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(redis_listener, "_run_once", fake_run_once)
+    monkeypatch.setattr(redis_listener.asyncio, "sleep", fake_sleep)
+
+    manager = RecordingManager()
+    with pytest.raises(asyncio.CancelledError):
+        await redis_listener.run(manager, redis_url="redis://fake")
+
+    # call 1 fails -> sleep(1.0), backoff -> 2.0
+    # call 2 returns cleanly -> backoff reset to 1.0, retried immediately
+    # call 3 fails -> sleep(1.0) again, since backoff was reset
+    # call 4 cancels
+    assert sleeps == [1.0, 1.0]

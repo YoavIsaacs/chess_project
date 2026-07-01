@@ -17,6 +17,7 @@ monotonic ply the `moves.move_number` column stores.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -44,9 +45,51 @@ log = logging.getLogger(__name__)
 # update_move repository function) to fill in the real SAN notation.
 _PENDING_NOTATION = "?"
 
+# Reconnect backoff (run(), below): starts at 1s, doubles on each consecutive
+# failed attempt, capped at 30s. Reset to the initial value any time a
+# connection is established, so a long-lived connection dropping later
+# doesn't inherit a stale, maxed-out backoff from an unrelated earlier outage.
+_INITIAL_BACKOFF_S = 1.0
+_MAX_BACKOFF_S = 30.0
+
 
 async def run(manager: ConnectionManager, redis_url: str = REDIS_URL) -> None:
-    """Subscribe to the game event channels and process messages until cancelled."""
+    """Connect, subscribe, and process messages — reconnecting with backoff
+    if the connection is lost or can't be established, so a Redis restart
+    doesn't require restarting the whole FastAPI process to recover.
+
+    Runs until cancelled (main.py's lifespan cancels this task on shutdown).
+    """
+    backoff_s = _INITIAL_BACKOFF_S
+
+    while True:
+        try:
+            await _run_once(manager, redis_url)
+            # pubsub.listen() ending without an exception is unusual for a
+            # real connection (normally it runs until cancelled or the
+            # connection drops), but treat it the same as a drop: reconnect.
+            log.warning("redis_listener: subscription ended, reconnecting")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception(
+                "redis_listener: connection error, retrying in %.1fs", backoff_s
+            )
+            await asyncio.sleep(backoff_s)
+            backoff_s = min(backoff_s * 2, _MAX_BACKOFF_S)
+        else:
+            # Reached only after a connection was successfully established
+            # (subscribe succeeded) and later ended cleanly — reset backoff
+            # and retry immediately rather than penalizing a working setup.
+            backoff_s = _INITIAL_BACKOFF_S
+
+
+async def _run_once(manager: ConnectionManager, redis_url: str) -> None:
+    """Single connect -> subscribe -> listen -> cleanup cycle.
+
+    Raises on connection failure; run() is responsible for catching that and
+    deciding whether/when to retry.
+    """
     redis_client = aioredis.from_url(redis_url)
     pubsub = redis_client.pubsub()
     await pubsub.subscribe(CHANNEL_GAME_EVENTS)
@@ -69,7 +112,7 @@ async def run(manager: ConnectionManager, redis_url: str = REDIS_URL) -> None:
         await pubsub.unsubscribe(CHANNEL_GAME_EVENTS)
         await pubsub.punsubscribe("game:*:events")
         await redis_client.aclose()
-        log.info("redis_listener stopped, unsubscribed")
+        log.info("redis_listener connection closed")
 
 
 async def _handle_event(payload: dict, manager: ConnectionManager) -> None:
