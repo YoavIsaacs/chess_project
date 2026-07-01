@@ -9,6 +9,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from chess_db.engine import dispose as dispose_engine
+
 from .connection_manager import ConnectionManager
 from .redis_listener import run as run_redis_listener
 from .routers.admin import router as admin_router
@@ -40,6 +42,9 @@ def create_app() -> FastAPI:
             except asyncio.CancelledError:
                 pass
             log.info("API shutting down — redis_listener task cancelled")
+
+            await dispose_engine()
+            log.info("API shutting down — chess_db engine connection pool disposed")
 
     app = FastAPI(title="Chess Analysis System API", lifespan=lifespan)
     app.include_router(games_router)
