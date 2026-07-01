@@ -1,4 +1,5 @@
-"""Repository functions for the `moves` table (Step 13 Phase 4)."""
+"""Repository functions for the `moves` table (Step 13 Phase 4;
+list_moves_for_game added in Step 14 to support the public move-history route)."""
 from __future__ import annotations
 
 import uuid
@@ -75,3 +76,15 @@ async def insert_move(
     await session.flush()
     await session.refresh(move)
     return move
+
+
+async def list_moves_for_game(
+    session: AsyncSession, game_id: uuid.UUID
+) -> list[Move]:
+    """Return all moves for a game, ordered by move_number ascending — the
+    move history feed for spec 4.2's Page 2 (stats) and Page 3 (analysis).
+    """
+    result = await session.execute(
+        select(Move).where(Move.game_id == game_id).order_by(Move.move_number)
+    )
+    return list(result.scalars().all())

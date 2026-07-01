@@ -1,4 +1,5 @@
-"""Repository functions for the `games` table (Step 13 Phase 4).
+"""Repository functions for the `games` table (Step 13 Phase 4; list_games and
+delete_game added in Step 14 to support the public/admin API routes).
 
 Callers supply the session and own the transaction boundary — these
 functions never call commit() or rollback().
@@ -51,6 +52,19 @@ async def get_game(session: AsyncSession, game_id: uuid.UUID) -> Game | None:
     return result.scalar_one_or_none()
 
 
+async def list_games(
+    session: AsyncSession, limit: int = 50, offset: int = 0
+) -> list[Game]:
+    """Return games ordered most-recently-started first, for the game
+    selection page (spec 4.2, Page 1). Live games surface naturally near the
+    top since they were started most recently.
+    """
+    result = await session.execute(
+        select(Game).order_by(Game.started_at.desc()).limit(limit).offset(offset)
+    )
+    return list(result.scalars().all())
+
+
 async def end_game(
     session: AsyncSession,
     game_id: uuid.UUID,
@@ -75,3 +89,18 @@ async def end_game(
     await session.flush()
     await session.refresh(game)
     return game
+
+
+async def delete_game(session: AsyncSession, game_id: uuid.UUID) -> bool:
+    """Delete a Game row (and its moves, via the FK's ondelete=CASCADE).
+
+    Returns True if a row was deleted, False if no game existed for
+    `game_id`. Admin-only operation — see checklist.md Step 14 design note.
+    """
+    game = await get_game(session, game_id)
+    if game is None:
+        return False
+
+    await session.delete(game)
+    await session.flush()
+    return True
